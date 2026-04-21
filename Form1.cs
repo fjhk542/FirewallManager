@@ -1,4 +1,4 @@
-﻿﻿﻿﻿using System;
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -228,6 +229,60 @@ namespace FirewallManager
             }
         }
 
+        /// <summary>
+        /// 检查防火墙规则是否存在
+        /// Check if firewall rule exists
+        /// </summary>
+        /// <param name="ruleName">规则名称</param>
+        /// <returns>规则是否存在</returns>
+        private bool CheckRuleExists(string ruleName)
+        {
+            try
+            {
+                bool found = false;
+                int totalRules = 0;
+                int blockRulesCount = 0;
+                
+                LogManager.Debug($"开始检查规则: {ruleName}");
+                
+                foreach (var rule in firewallPolicy.Rules)
+                {
+                    totalRules++;
+                    try
+                    {
+                        dynamic fwRule = rule;
+                        string existingName = fwRule.Name;
+                        
+                        // 统计以Block_开头的规则数量
+                        if (existingName.StartsWith("Block_"))
+                        {
+                            blockRulesCount++;
+                        }
+                        
+                        // 检查是否是当前规则
+                        if (existingName == ruleName)
+                        {
+                            found = true;
+                            LogManager.Debug($"找到规则: {ruleName}");
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogManager.Debug($"遍历规则时出错: {ex.Message}");
+                    }
+                }
+                
+                LogManager.Info($"规则检查结果: {ruleName} - 存在={found}, 总规则数={totalRules}, Block规则数={blockRulesCount}");
+                return found;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"检查规则失败: {ex.Message}");
+                return false;
+            }
+        }
+
         #region UI Controls
         // UI 控件定义
         private System.Windows.Forms.ListBox folderListBox;
@@ -239,6 +294,7 @@ namespace FirewallManager
         private System.Windows.Forms.Button resumeButton;
         private System.Windows.Forms.Button stopButton;
         private System.Windows.Forms.Button viewLogsButton;
+        private System.Windows.Forms.Button whitelistButton;
         private System.Windows.Forms.ProgressBar progressBar;
         private System.Windows.Forms.Label statusLabel;
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanel;
@@ -254,6 +310,8 @@ namespace FirewallManager
         private System.Windows.Forms.ToolStripMenuItem showMainFormToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem updateRulesTrayToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem exitToolStripMenuItem;
+        private System.Windows.Forms.CheckBox autoMonitorCheckBox;
+        private List<System.IO.FileSystemWatcher> watchers = new List<System.IO.FileSystemWatcher>();
         #endregion
 
         #endregion
@@ -397,6 +455,7 @@ namespace FirewallManager
                 
                 CacheFirewallRules();
                 LoadMonitoredFolders();
+                LoadMonitoredTargets(); // 从配置文件加载监控目标
                 LoadAddedRules();
                 
                 LogManager.Info(LangManager.GetText("logMessages.firewallInitialized"));
@@ -408,6 +467,178 @@ namespace FirewallManager
                 LogManager.Error($"初始化防火墙失败: {ex.GetType().Name}: {ex.Message}");
                 LogManager.Error($"堆栈跟踪: {ex.StackTrace}");
                 MessageBox.Show(LangManager.GetText("messages.initializeFirewallFailed"), LangManager.GetText("messages.initializeFirewallFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        
+        /// <summary>
+        /// 初始化文件系统监控器
+        /// Initialize file system watchers
+        /// </summary>
+        private void InitializeFileWatchers()
+        {
+            try
+            {
+                // 停止现有的监控器
+                StopFileWatchers();
+                
+                // 为每个监控目标创建监控器
+                foreach (var target in monitoredTargets)
+                {
+                    if (!target.IsExe && Directory.Exists(target.Path))
+                    {
+                        CreateFileWatcher(target.Path);
+                    }
+                }
+                
+                LogManager.Info($"已初始化 {watchers.Count} 个文件系统监控器");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("初始化文件系统监控器失败", ex);
+            }
+        }
+        
+        /// <summary>
+        /// 创建文件系统监控器
+        /// Create file system watcher
+        /// </summary>
+        /// <param name="path">监控路径</param>
+        private void CreateFileWatcher(string path)
+        {
+            try
+            {
+                var watcher = new System.IO.FileSystemWatcher();
+                watcher.Path = path;
+                watcher.Filter = "*.exe";
+                watcher.IncludeSubdirectories = true;
+                
+                // 订阅事件
+                watcher.Created += FileSystemWatcher_Created;
+                watcher.Renamed += FileSystemWatcher_Renamed;
+                
+                // 启动监控
+                watcher.EnableRaisingEvents = true;
+                
+                watchers.Add(watcher);
+                LogManager.Info($"创建文件系统监控器: {path}");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"创建文件系统监控器失败: {path}", ex);
+            }
+        }
+        
+        /// <summary>
+        /// 停止文件系统监控器
+        /// Stop file system watchers
+        /// </summary>
+        private void StopFileWatchers()
+        {
+            foreach (var watcher in watchers)
+            {
+                try
+                {
+                    watcher.EnableRaisingEvents = false;
+                    watcher.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Error("停止文件系统监控器失败", ex);
+                }
+            }
+            watchers.Clear();
+        }
+        
+        /// <summary>
+        /// 文件创建事件处理
+        /// File created event handler
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void FileSystemWatcher_Created(object sender, System.IO.FileSystemEventArgs e)
+        {
+            try
+            {
+                LogManager.Info($"检测到新文件: {e.FullPath}");
+                // 为新创建的EXE文件创建防火墙规则
+                CreateRuleForExe(e.FullPath);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("处理文件创建事件失败", ex);
+            }
+        }
+        
+        /// <summary>
+        /// 文件重命名事件处理
+        /// File renamed event handler
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void FileSystemWatcher_Renamed(object sender, System.IO.RenamedEventArgs e)
+        {
+            try
+            {
+                LogManager.Info($"文件重命名: {e.OldFullPath} -> {e.FullPath}");
+                // 为新名称创建规则，删除旧规则
+                CreateRuleForExe(e.FullPath);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("处理文件重命名事件失败", ex);
+            }
+        }
+        
+        /// <summary>
+        /// 为可执行文件创建防火墙规则
+        /// Create firewall rule for executable file
+        /// </summary>
+        /// <param name="exePath">可执行文件路径</param>
+        private void CreateRuleForExe(string exePath)
+        {
+            try
+            {
+                // 检查应用程序是否在白名单中
+                if (WhitelistForm.IsInWhitelist(exePath))
+                {
+                    LogManager.Info($"应用程序在白名单中，跳过: {exePath}");
+                    return;
+                }
+                
+                // 生成规则名称
+                string fileName = System.IO.Path.GetFileNameWithoutExtension(exePath);
+                string pathHash = GetPathHash(exePath);
+                string ruleName = $"Block_{fileName}_{pathHash}";
+                
+                // 检查规则是否已存在
+                if (!CheckRuleExists(ruleName))
+                {
+                    // 创建新规则
+                    Type ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule");
+                    dynamic newRule = Activator.CreateInstance(ruleType);
+                    
+                    newRule.Name = ruleName;
+                    newRule.Description = $"Blocked by FirewallManager (Auto): {exePath}";
+                    newRule.ApplicationName = exePath;
+                    newRule.Direction = (int)NET_FW_DIRECTION_.NET_FW_DIRECTION_OUT;
+                    newRule.Action = (int)NET_FW_ACTION_.NET_FW_ACTION_BLOCK;
+                    newRule.Enabled = true;
+                    newRule.Profiles = 0x7FFFFFFF; // 所有配置文件
+                    
+                    firewallPolicy.Rules.Add(newRule);
+                    
+                    // 添加到本地列表
+                    if (!addedRules.Contains(ruleName))
+                    {
+                        addedRules.Add(ruleName);
+                    }
+                    
+                    LogManager.Info($"自动创建防火墙规则: {ruleName} -> {exePath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"为可执行文件创建规则失败: {exePath}", ex);
             }
         }
 
@@ -433,6 +664,24 @@ namespace FirewallManager
             resumeButton.Text = LangManager.GetText("buttons.resume");
             stopButton.Text = LangManager.GetText("buttons.stop");
             viewLogsButton.Text = LangManager.GetText("buttons.viewLogs");
+            whitelistButton.Text = "白名单管理";
+        }
+
+        /// <summary>
+        /// 线程安全的UI更新方法
+        /// Thread-safe UI update method
+        /// </summary>
+        /// <param name="action">要在UI线程上执行的操作</param>
+        private void SafeInvoke(Action action)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(action);
+            }
+            else
+            {
+                action();
+            }
         }
 
         /// <summary>
@@ -443,35 +692,33 @@ namespace FirewallManager
         /// <param name="statusText">状态文本</param>
         private void UpdateUI(WorkState state, string statusText)
         {
-            if (this.InvokeRequired)
+            SafeInvoke(() =>
             {
-                this.Invoke(new Action(() => UpdateUI(state, statusText)));
-                return;
-            }
-            
-            currentState = state;
-            statusLabel.Text = statusText;
-            
-            // 根据状态启用/禁用按钮
-            bool isIdle = (state == WorkState.Idle);
-            bool isRunning = (state == WorkState.Running);
-            bool isPaused = (state == WorkState.Paused);
-            bool isStopping = (state == WorkState.Stopping);
-            
-            // 主要操作按钮
-            addButton.Enabled = isIdle;
-            updateRulesButton.Enabled = isIdle;
-            clearRulesButton.Enabled = isIdle;
-            removeFolderButton.Enabled = isIdle;
-            
-            // 运行控制按钮
-            pauseButton.Enabled = isRunning;
-            resumeButton.Enabled = isPaused;
-            stopButton.Enabled = isRunning || isPaused;
-            
-            // 更新进度条可见性
-            progressBar.Style = isRunning ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
-            progressBar.MarqueeAnimationSpeed = isRunning ? 30 : 0;
+                currentState = state;
+                statusLabel.Text = statusText;
+                
+                // 根据状态启用/禁用按钮
+                bool isIdle = (state == WorkState.Idle);
+                bool isRunning = (state == WorkState.Running);
+                bool isPaused = (state == WorkState.Paused);
+                bool isStopping = (state == WorkState.Stopping);
+                
+                // 主要操作按钮
+                addButton.Enabled = isIdle;
+                updateRulesButton.Enabled = isIdle;
+                clearRulesButton.Enabled = isIdle;
+                removeFolderButton.Enabled = isIdle;
+                whitelistButton.Enabled = isIdle;
+                
+                // 运行控制按钮
+                pauseButton.Enabled = isRunning;
+                resumeButton.Enabled = isPaused;
+                stopButton.Enabled = isRunning || isPaused;
+                
+                // 更新进度条可见性
+                progressBar.Style = isRunning ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
+                progressBar.MarqueeAnimationSpeed = isRunning ? 30 : 0;
+            });
         }
 
         #endregion
@@ -553,6 +800,66 @@ namespace FirewallManager
                 LogManager.Error(LangManager.GetText("logMessages.loadingRulesFailed"), ex);
             }
         }
+
+        /// <summary>
+        /// 保存监控目标到配置文件
+        /// Save monitored targets to config file
+        /// </summary>
+        private void SaveMonitoredTargets()
+        {
+            try
+            {
+                string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FirewallManager", "config.json");
+                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+                
+                var targets = monitoredTargets.Select(t => t.Path).ToList();
+                string json = JsonSerializer.Serialize(targets, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(configPath, json, Encoding.UTF8);
+                
+                LogManager.Info("监控目标已保存到配置文件");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("保存监控目标失败", ex);
+            }
+        }
+
+        /// <summary>
+        /// 加载监控目标从配置文件
+        /// Load monitored targets from config file
+        /// </summary>
+        private void LoadMonitoredTargets()
+        {
+            try
+            {
+                string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FirewallManager", "config.json");
+                
+                if (File.Exists(configPath))
+                {
+                    string json = File.ReadAllText(configPath, Encoding.UTF8);
+                    var paths = JsonSerializer.Deserialize<List<string>>(json);
+                    
+                    if (paths != null)
+                    {
+                        foreach (var path in paths)
+                        {
+                            if ((Directory.Exists(path) || (File.Exists(path) && path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))) && 
+                                !monitoredTargets.Any(t => t.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                var target = new ScanTarget(path);
+                                monitoredTargets.Add(target);
+                                folderListBox.Items.Add(target);
+                            }
+                        }
+                        LogManager.Info($"从配置文件加载了 {paths.Count} 个监控目标");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("加载监控目标失败", ex);
+            }
+        }
         
         /// <summary>
         /// 同步本地规则列表与实际防火墙规则
@@ -568,78 +875,7 @@ namespace FirewallManager
                 // 检查本地列表中的规则是否仍然存在于防火墙中
                 foreach (var ruleName in addedRules.ToList())
                 {
-                    bool ruleExists = false;
-                    
-                    // 方法1：尝试通过名称获取规则
-                    try
-                    {
-                        var existingRule = firewallPolicy.Rules.Item(ruleName);
-                        if (existingRule != null)
-                        {
-                            try
-                            {
-                                var name = existingRule.Name;
-                                ruleExists = true;
-                            }
-                            catch
-                            {
-                                ruleExists = false;
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        ruleExists = false;
-                    }
-                    
-                    // 方法2：遍历所有规则确认
-                    try
-                    {
-                        bool found = false;
-                        foreach (var rule in firewallPolicy.Rules)
-                        {
-                            try
-                            {
-                                dynamic fwRule = rule;
-                                string existingName = fwRule.Name;
-                                if (existingName == ruleName)
-                                {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            catch { }
-                        }
-                        ruleExists = found;
-                    }
-                    catch { }
-                    
-                    // 方法3：再次尝试获取规则
-                    try
-                    {
-                        var existingRule = firewallPolicy.Rules.Item(ruleName);
-                        if (existingRule != null)
-                        {
-                            try
-                            {
-                                var name = existingRule.Name;
-                                var desc = existingRule.Description;
-                                ruleExists = true;
-                            }
-                            catch
-                            {
-                                ruleExists = false;
-                            }
-                        }
-                        else
-                        {
-                            ruleExists = false;
-                        }
-                    }
-                    catch
-                    {
-                        ruleExists = false;
-                    }
+                    bool ruleExists = CheckRuleExists(ruleName);
                     
                     LogManager.Debug($"同步检查规则 {ruleName}: 存在={ruleExists}");
                     
@@ -664,6 +900,29 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 LogManager.Error("同步规则列表失败", ex);
+            }
+        }
+        
+        /// <summary>
+        /// 查看规则详情
+        /// View rule details
+        /// </summary>
+        /// <param name="ruleName">规则名称</param>
+        private void ViewRuleDetails(string ruleName)
+        {
+            try
+            {
+                dynamic rule = firewallPolicy.Rules.Item(ruleName);
+                if (rule != null)
+                {
+                    var detailsForm = new RuleDetailsForm(rule, ruleName);
+                    detailsForm.ShowDialog();
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"查看规则详情失败: {ex.Message}");
+                MessageBox.Show($"查看规则详情失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -695,6 +954,18 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private void addButton_Click(object sender, EventArgs e)
         {
+            // 显示添加菜单
+            addContextMenu.Show(addButton, addButton.PointToScreen(new System.Drawing.Point(0, addButton.Height)));
+        }
+        
+        /// <summary>
+        /// 添加文件夹菜单项点击事件
+        /// Add folder menu item click event
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void addFolderToolStripMenuItem_Click(object sender, EventArgs e)
+        {
             // 打开文件夹选择对话框
             using (var folderDialog = new FolderBrowserDialog())
             {
@@ -707,6 +978,14 @@ namespace FirewallManager
                         var target = new ScanTarget(selectedPath);
                         monitoredTargets.Add(target);
                         folderListBox.Items.Add(target);
+                        SaveMonitoredTargets(); // 保存监控目标
+                        LogManager.Info($"添加文件夹到监控: {selectedPath}");
+                        
+                        // 如果自动监控已启用，为新添加的文件夹创建监控器
+                        if (autoMonitorCheckBox.Checked && !target.IsExe)
+                        {
+                            CreateFileWatcher(selectedPath);
+                        }
                     }
                 }
             }
@@ -850,6 +1129,13 @@ namespace FirewallManager
             {
                 monitoredTargets.Remove(selectedTarget);
                 folderListBox.Items.Remove(selectedTarget);
+                SaveMonitoredTargets(); // 保存监控目标
+                
+                // 如果自动监控已启用，重新初始化文件系统监控器
+                if (autoMonitorCheckBox.Checked)
+                {
+                    InitializeFileWatchers();
+                }
             }
         }
 
@@ -871,6 +1157,91 @@ namespace FirewallManager
             {
                 LogManager.Error(LangManager.GetText("logMessages.openLogsFailed"), ex);
                 MessageBox.Show(LangManager.GetText("messages.openLogsFailed"), LangManager.GetText("messages.openLogsFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        
+        /// <summary>
+        /// 白名单管理按钮点击事件
+        /// Whitelist management button click event
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void whitelistButton_Click(object sender, EventArgs e)
+        {
+            // 打开白名单管理窗口
+            try
+            {
+                var whitelistForm = new WhitelistForm();
+                whitelistForm.WhitelistSaved += WhitelistForm_WhitelistSaved;
+                whitelistForm.Show();
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("打开白名单管理窗口失败", ex);
+                MessageBox.Show("打开白名单管理窗口失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        
+        /// <summary>
+        /// 白名单保存事件处理
+        /// Whitelist saved event handler
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void WhitelistForm_WhitelistSaved(object sender, EventArgs e)
+        {
+            // 白名单保存后，更新防火墙规则
+            if (currentState == WorkState.Idle)
+            {
+                cancellationTokenSource = new CancellationTokenSource();
+                taskCompletedEvent.Reset();
+                
+                workTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        UpdateFirewallRules(cancellationTokenSource.Token);
+                    }
+                    finally
+                    {
+                        taskCompletedEvent.Set();
+                    }
+                }, cancellationTokenSource.Token);
+                
+                UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
+            }
+        }
+        
+        /// <summary>
+        /// 自动监控复选框点击事件
+        /// Auto monitor checkbox click event
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void autoMonitorCheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                if (autoMonitorCheckBox.Checked)
+                {
+                    // 启用自动监控
+                    InitializeFileWatchers();
+                    LogManager.Info("自动监控已启用");
+                    trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), "自动监控已启用", ToolTipIcon.Info);
+                }
+                else
+                {
+                    // 禁用自动监控
+                    StopFileWatchers();
+                    LogManager.Info("自动监控已禁用");
+                    trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), "自动监控已禁用", ToolTipIcon.Info);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("切换自动监控状态失败", ex);
+                autoMonitorCheckBox.Checked = false; // 恢复到未勾选状态
+                MessageBox.Show("切换自动监控状态失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -962,7 +1333,8 @@ namespace FirewallManager
                 // 收集所有需要处理的EXE文件
                 List<string> exeFiles = new List<string>();
                 
-                foreach (var target in monitoredTargets.ToList())
+                // 并行扫描文件，提高性能
+                var scanTasks = monitoredTargets.Select(target => Task.Run(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     
@@ -970,24 +1342,37 @@ namespace FirewallManager
                     {
                         if (File.Exists(target.Path))
                         {
-                            exeFiles.Add(target.Path);
+                            return new List<string> { target.Path };
                         }
                     }
                     else if (Directory.Exists(target.Path))
                     {
-                        UpdateUI(WorkState.Running, $"正在扫描文件夹: {target.Path}");
-                        
                         try
                         {
+                            LogManager.Info($"开始扫描文件夹: {target.Path}");
                             var files = Directory.GetFiles(target.Path, "*.exe", SearchOption.AllDirectories);
-                            exeFiles.AddRange(files);
+                            LogManager.Info($"扫描完成: {target.Path} - 找到 {files.Length} 个可执行文件");
+                            return files.ToList();
                         }
                         catch (Exception ex)
                         {
                             LogManager.Warning($"扫描文件夹失败: {target.Path} - {ex.Message}");
                         }
                     }
+                    return new List<string>();
+                }, cancellationToken)).ToArray();
+                
+                // 等待所有扫描任务完成
+                Task.WaitAll(scanTasks, cancellationToken);
+                
+                // 合并结果
+                foreach (var task in scanTasks)
+                {
+                    exeFiles.AddRange(task.Result);
                 }
+                
+                // 去重，避免重复处理
+                exeFiles = exeFiles.Distinct().ToList();
                 
                 LogManager.Info($"找到 {exeFiles.Count} 个可执行文件");
                 UpdateUI(WorkState.Running, $"找到 {exeFiles.Count} 个可执行文件，正在创建防火墙规则...");
@@ -1015,60 +1400,37 @@ namespace FirewallManager
                         string pathHash = GetPathHash(exeFile);
                         string ruleName = $"Block_{fileName}_{pathHash}";
                         
-                        // 检查规则是否已存在
-                        bool ruleExists = false;
-                        
-                        // 直接遍历所有规则，这是最可靠的方法
-                        try
+                        // 检查应用程序是否在白名单中
+                        if (WhitelistForm.IsInWhitelist(exeFile))
                         {
-                            bool found = false;
-                            int totalRules = 0;
-                            int blockRulesCount = 0;
+                            LogManager.Info($"应用程序在白名单中，跳过: {exeFile}");
                             
-                            LogManager.Debug($"开始检查规则: {ruleName}");
-                            
-                            foreach (var rule in firewallPolicy.Rules)
+                            // 检查是否存在针对该应用程序的规则，如果存在则删除
+                            bool ruleExists = CheckRuleExists(ruleName);
+                            if (ruleExists)
                             {
-                                totalRules++;
                                 try
                                 {
-                                    dynamic fwRule = rule;
-                                    string existingName = fwRule.Name;
-                                    
-                                    // 统计以Block_开头的规则数量
-                                    if (existingName.StartsWith("Block_"))
-                                    {
-                                        blockRulesCount++;
-                                        LogManager.Debug($"发现Block规则: {existingName}");
-                                    }
-                                    
-                                    // 检查是否是当前规则
-                                    if (existingName == ruleName)
-                                    {
-                                        found = true;
-                                        LogManager.Debug($"找到规则: {ruleName}");
-                                        break;
-                                    }
+                                    firewallPolicy.Rules.Remove(ruleName);
+                                    addedRules.Remove(ruleName);
+                                    LogManager.Info($"删除白名单应用程序的规则: {ruleName}");
                                 }
                                 catch (Exception ex)
                                 {
-                                    LogManager.Debug($"遍历规则时出错: {ex.Message}");
+                                    LogManager.Warning($"删除规则失败: {ruleName} - {ex.Message}");
                                 }
                             }
                             
-                            ruleExists = found;
-                            LogManager.Info($"规则检查结果: {ruleName} - 存在={found}, 总规则数={totalRules}, Block规则数={blockRulesCount}");
-                        }
-                        catch (Exception ex)
-                        {
-                            LogManager.Error($"检查规则失败: {ex.Message}");
-                            ruleExists = false;
+                            skippedCount++;
+                            continue;
                         }
                         
-                        // 最终检查结果
-                        LogManager.Debug($"最终检查规则 {ruleName}: 存在={ruleExists}");
+                        // 检查规则是否已存在
+                        bool ruleExists2 = CheckRuleExists(ruleName);
                         
-                        if (!ruleExists)
+                        // 最终检查结果已在CheckRuleExists方法中记录
+                        
+                        if (!ruleExists2)
                         {
                             // 创建新规则
                             Type ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule");
@@ -1205,6 +1567,7 @@ namespace FirewallManager
                 if (addedCount > 0)
                 {
                     LogManager.Info($"成功从剪贴板粘贴 {addedCount} 个路径");
+                    SaveMonitoredTargets(); // 保存监控目标
                 }
                 else
                 {
@@ -1219,17 +1582,6 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 添加文件夹菜单项点击事件
-        /// Add folder menu item click event
-        /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
-        private void addFolderToolStripMenuItem_Click(object sender, EventArgs e)
-        {
-            // 实现添加文件夹功能
-        }
-
-        /// <summary>
         /// 添加可执行文件菜单项点击事件
         /// Add executable file menu item click event
         /// </summary>
@@ -1237,7 +1589,29 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private void addExeToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 实现添加可执行文件功能
+            // 打开文件选择对话框
+            using (var openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Title = "选择可执行文件";
+                openFileDialog.Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*";
+                openFileDialog.Multiselect = false;
+                
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    string selectedPath = openFileDialog.FileName;
+                    if (File.Exists(selectedPath) && selectedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!monitoredTargets.Any(t => t.Path.Equals(selectedPath, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var target = new ScanTarget(selectedPath);
+                            monitoredTargets.Add(target);
+                            folderListBox.Items.Add(target);
+                            SaveMonitoredTargets(); // 保存监控目标
+                            LogManager.Info($"添加可执行文件到监控: {selectedPath}");
+                        }
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -1260,7 +1634,29 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private void updateRulesTrayToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 实现更新规则功能
+            // 启动更新规则任务
+            if (currentState == WorkState.Idle)
+            {
+                cancellationTokenSource = new CancellationTokenSource();
+                taskCompletedEvent.Reset();
+                
+                workTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        UpdateFirewallRules(cancellationTokenSource.Token);
+                    }
+                    finally
+                    {
+                        taskCompletedEvent.Set();
+                    }
+                }, cancellationTokenSource.Token);
+                
+                UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
+                
+                // 显示系统托盘通知
+                trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), "正在更新防火墙规则...", ToolTipIcon.Info);
+            }
         }
 
         /// <summary>

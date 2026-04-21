@@ -75,6 +75,10 @@ namespace FirewallManager
         this.addExeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
         // 初始化查看日志按钮：用于查看操作日志
         this.viewLogsButton = new System.Windows.Forms.Button();
+        // 初始化白名单管理按钮：用于打开白名单管理窗口
+        this.whitelistButton = new System.Windows.Forms.Button();
+        // 初始化自动监控复选框：用于启用/禁用自动监控功能
+        this.autoMonitorCheckBox = new System.Windows.Forms.CheckBox();
         // 初始化托盘图标：用于系统托盘显示和操作
         this.trayIcon = new System.Windows.Forms.NotifyIcon(this.components);
         // 初始化托盘菜单：用于托盘图标的右键菜单
@@ -171,8 +175,9 @@ namespace FirewallManager
             this.tableLayoutPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25F));
             this.tableLayoutPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25F));
             this.tableLayoutPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25F));
-            this.tableLayoutPanel.RowCount = 5;
+            this.tableLayoutPanel.RowCount = 6;
             this.tableLayoutPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.tableLayoutPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.tableLayoutPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.tableLayoutPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.tableLayoutPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 30F));
@@ -253,6 +258,29 @@ namespace FirewallManager
             this.viewLogsButton.Click += new System.EventHandler(this.viewLogsButton_Click);
             this.viewLogsButton.Anchor = System.Windows.Forms.AnchorStyles.None;
             // 
+            // whitelistButton
+            // 
+            this.whitelistButton.Location = new System.Drawing.Point(3, 3);
+            this.whitelistButton.Name = "whitelistButton";
+            this.whitelistButton.Size = new System.Drawing.Size(120, 30);
+            this.whitelistButton.TabIndex = 14;
+            this.whitelistButton.Text = "白名单管理";
+            this.whitelistButton.UseVisualStyleBackColor = true;
+            this.whitelistButton.Click += new System.EventHandler(this.whitelistButton_Click);
+            this.whitelistButton.Anchor = System.Windows.Forms.AnchorStyles.None;
+            // 
+            // autoMonitorCheckBox
+            // 
+            this.autoMonitorCheckBox.AutoSize = true;
+            this.autoMonitorCheckBox.Location = new System.Drawing.Point(3, 8);
+            this.autoMonitorCheckBox.Name = "autoMonitorCheckBox";
+            this.autoMonitorCheckBox.Size = new System.Drawing.Size(100, 17);
+            this.autoMonitorCheckBox.TabIndex = 15;
+            this.autoMonitorCheckBox.Text = "启用自动监控";
+            this.autoMonitorCheckBox.UseVisualStyleBackColor = true;
+            this.autoMonitorCheckBox.CheckedChanged += new System.EventHandler(this.autoMonitorCheckBox_CheckedChanged);
+            this.autoMonitorCheckBox.Anchor = System.Windows.Forms.AnchorStyles.None;
+            // 
             // openFileDialog
             // 
             this.openFileDialog.Filter = "可执行文件 (*.exe)|*.exe";
@@ -323,19 +351,23 @@ namespace FirewallManager
             this.tableLayoutPanel.Controls.Add(this.clearRulesButton, 2, 1);
             this.tableLayoutPanel.Controls.Add(this.removeFolderButton, 3, 1);
             
-            // 第二行：运行控制按钮和查看日志
+            // 第二行：运行控制按钮
             this.tableLayoutPanel.Controls.Add(this.pauseButton, 0, 2);
             this.tableLayoutPanel.Controls.Add(this.resumeButton, 1, 2);
             this.tableLayoutPanel.Controls.Add(this.stopButton, 2, 2);
-            this.tableLayoutPanel.Controls.Add(this.viewLogsButton, 3, 2);
             
-            // 第三行：进度条
+            // 第三行：辅助功能按钮
+            this.tableLayoutPanel.Controls.Add(this.viewLogsButton, 0, 3);
+            this.tableLayoutPanel.Controls.Add(this.whitelistButton, 1, 3);
+            this.tableLayoutPanel.Controls.Add(this.autoMonitorCheckBox, 2, 3);
+            
+            // 第四行：进度条
             this.tableLayoutPanel.SetColumnSpan(this.progressBar, 4);
-            this.tableLayoutPanel.Controls.Add(this.progressBar, 0, 3);
+            this.tableLayoutPanel.Controls.Add(this.progressBar, 0, 4);
             
-            // 第四行：状态标签
+            // 第五行：状态标签
             this.tableLayoutPanel.SetColumnSpan(this.statusLabel, 4);
-            this.tableLayoutPanel.Controls.Add(this.statusLabel, 0, 4);
+            this.tableLayoutPanel.Controls.Add(this.statusLabel, 0, 5);
             // 
             // Form1
             // 

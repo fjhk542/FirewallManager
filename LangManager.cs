@@ -58,29 +58,29 @@ namespace FirewallManager
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string languageDir = Path.Combine(baseDir, Config.LANGUAGE_DIR);
                 
-                // 写入调试日志到文件
-                File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 基础目录: {baseDir}\n");
-                File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 语言文件目录: {languageDir}\n");
+                // 使用Debug.WriteLine替代文件日志
+                System.Diagnostics.Debug.WriteLine($"[LangManager] 基础目录: {baseDir}");
+                System.Diagnostics.Debug.WriteLine($"[LangManager] 语言文件目录: {languageDir}");
                 
                 if (Directory.Exists(languageDir))
                 {
-                    File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 语言目录存在\n");
+                    System.Diagnostics.Debug.WriteLine("[LangManager] 语言目录存在");
                     
                     var files = Directory.GetFiles(languageDir, "*.json");
-                    File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 找到 {files.Length} 个语言文件\n");
+                    System.Diagnostics.Debug.WriteLine($"[LangManager] 找到 {files.Length} 个语言文件");
                     
                     foreach (var file in files)
                     {
-                        File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 处理文件: {file}\n");
+                        System.Diagnostics.Debug.WriteLine($"[LangManager] 处理文件: {file}");
                         try
                         {
                             string fileName = Path.GetFileNameWithoutExtension(file);
                             string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
-                            File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 提取语言代码: {languageCode}\n");
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] 提取语言代码: {languageCode}");
                             
                             if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
                             {
-                                File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 无效的语言代码: {languageCode}\n");
+                                System.Diagnostics.Debug.WriteLine($"[LangManager] 无效的语言代码: {languageCode}");
                                 continue;
                             }
                             
@@ -99,23 +99,22 @@ namespace FirewallManager
                                 else
                                     languageResources.Add(languageCode, translations);
                             }
-                            File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 成功加载语言: {languageCode}, 条目数: {translations.Count}\n");
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] 成功加载语言: {languageCode}, 条目数: {translations.Count}");
                         }
                         catch (Exception ex)
                         {
-                            File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 加载语言文件 {file} 失败: {ex.Message}\n");
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] 加载语言文件 {file} 失败: {ex.Message}");
                         }
                     }
                 }
                 else
                 {
-                    File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 语言目录不存在\n");
+                    System.Diagnostics.Debug.WriteLine("[LangManager] 语言目录不存在");
                 }
             }
             catch (Exception ex)
             {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                File.AppendAllText(Path.Combine(baseDir, "LangDebug.log"), $"[{DateTime.Now}] 加载语言文件失败: {ex.Message}\n");
+                System.Diagnostics.Debug.WriteLine($"[LangManager] 加载语言文件失败: {ex.Message}");
             }
         }
         

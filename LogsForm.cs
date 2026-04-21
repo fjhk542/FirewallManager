@@ -48,7 +48,8 @@ namespace FirewallManager
             logsTextBox.Dock = DockStyle.Fill;
             logsTextBox.ReadOnly = true;
             logsTextBox.ScrollBars = ScrollBars.Vertical;
-            logsTextBox.Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
+            // 使用系统默认字体
+            logsTextBox.Font = new Font(SystemFonts.DefaultFont.FontFamily, 9F, FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
             
             btnRefresh = new Button();
             btnRefresh.Text = "刷新";
@@ -164,7 +165,12 @@ namespace FirewallManager
             {
                 try
                 {
+                    // 清空实际日志文件
+                    LogManager.ClearLogs();
+                    // 清空界面显示
                     logsTextBox.Clear();
+                    // 显示暂无日志记录
+                    logsTextBox.Text = "暂无日志记录";
                 }
                 catch (Exception ex)
                 {
