@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <!-- 禁用生成XML文档 -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GenerateDocumentationFile Condition="'$(Configuration)' == 'Release'">false</GenerateDocumentationFile>
+    
+    <!-- 禁用生成deps.json和runtimeconfig.dev.json -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <GenerateRuntimeConfigDevFile>false</GenerateRuntimeConfigDevFile>
+  </PropertyGroup>
+</Project>

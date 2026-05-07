@@ -1,0 +1,26 @@
+# Build outputs
+bin/
+obj/
+.trae/
+
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider/Resharper
+.idea/
+*.sln.iml
+
+# Logs
+*.log
+
+# Packages
+packages/
+*.nupkg
+
+# Temporary files
+*.tmp
+*.temp

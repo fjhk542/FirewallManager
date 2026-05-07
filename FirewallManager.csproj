@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Firewall.ico</ApplicationIcon>
+    <Version>1.4.1.0</Version>
+    <AssemblyVersion>1.4.1.0</AssemblyVersion>
+    <FileVersion>1.4.1.0</FileVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Lang\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="LanguageDiagnostic\**\*" />
+    <Content Remove="LanguageDiagnostic\**\*" />
+    <EmbeddedResource Remove="LanguageDiagnostic\**\*" />
+    <None Remove="LanguageDiagnostic\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="FirewallManager.Tests\**\*" />
+    <Content Remove="FirewallManager.Tests\**\*" />
+    <EmbeddedResource Remove="FirewallManager.Tests\**\*" />
+    <None Remove="FirewallManager.Tests\**\*" />
+  </ItemGroup>
+
+</Project>
