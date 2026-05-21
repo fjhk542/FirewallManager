@@ -11,6 +11,59 @@ namespace FirewallManager
     {
         private dynamic firewallRule;
         private string ruleName;
+
+        /// <summary>
+        /// 安全地从动态 COM 对象获取属性值
+        /// </summary>
+        /// <typeparam name="T">返回类型</typeparam>
+        /// <param name="obj">动态对象</param>
+        /// <param name="propertyName">属性名</param>
+        /// <param name="defaultValue">默认值</param>
+        /// <returns>属性值或默认值</returns>
+        private static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
+        {
+            try
+            {
+                if (obj == null)
+                {
+                    return defaultValue;
+                }
+                object value = obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.GetProperty, null, obj, null);
+                if (value == null)
+                {
+                    return defaultValue;
+                }
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// 安全地设置动态 COM 对象的属性值
+        /// </summary>
+        /// <param name="obj">动态对象</param>
+        /// <param name="propertyName">属性名</param>
+        /// <param name="value">属性值</param>
+        /// <returns>是否设置成功</returns>
+        private static bool SafeSetProperty(dynamic obj, string propertyName, object value)
+        {
+            try
+            {
+                if (obj == null)
+                {
+                    return false;
+                }
+                obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
         
         /// <summary>
         /// 构造函数
@@ -72,63 +125,17 @@ namespace FirewallManager
             {
                 // 安全访问 dynamic 对象的属性
                 txtRuleName.Text = ruleName ?? string.Empty;
-                
-                // 安全获取 Description 属性
-                try
-                {
-                    txtDescription.Text = firewallRule.Description ?? string.Empty;
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Description", ex.Message));
-                    txtDescription.Text = string.Empty;
-                }
-                
-                // 安全获取 ApplicationName 属性
-                try
-                {
-                    txtApplicationName.Text = firewallRule.ApplicationName ?? string.Empty;
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "ApplicationName", ex.Message));
-                    txtApplicationName.Text = string.Empty;
-                }
-                
-                // 安全获取 Enabled 属性
-                try
-                {
-                    chkEnabled.Checked = (bool)firewallRule.Enabled;
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Enabled", ex.Message));
-                    chkEnabled.Checked = true; // 默认启用
-                }
-                
+                txtDescription.Text = SafeGetProperty<string>(firewallRule, "Description", string.Empty);
+                txtApplicationName.Text = SafeGetProperty<string>(firewallRule, "ApplicationName", string.Empty);
+                chkEnabled.Checked = SafeGetProperty<bool>(firewallRule, "Enabled", true);
+
                 // 安全获取并设置 Direction 属性
-                try
-                {
-                    int direction = (int)firewallRule.Direction;
-                    cmbDirection.SelectedIndex = direction == 1 ? 0 : 1; // 1 = 入站, 2 = 出站
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Direction", ex.Message));
-                    cmbDirection.SelectedIndex = 1; // 默认出站
-                }
-                
+                int direction = SafeGetProperty<int>(firewallRule, "Direction", 2);
+                cmbDirection.SelectedIndex = direction == 1 ? 0 : 1;
+
                 // 安全获取并设置 Action 属性
-                try
-                {
-                    int action = (int)firewallRule.Action;
-                    cmbAction.SelectedIndex = action; // 0 = 阻止, 1 = 允许
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Action", ex.Message));
-                    cmbAction.SelectedIndex = 0; // 默认阻止
-                }
+                int action = SafeGetProperty<int>(firewallRule, "Action", 0);
+                cmbAction.SelectedIndex = action;
             }
             catch (Exception ex)
             {
@@ -146,12 +153,12 @@ namespace FirewallManager
         {
             try
             {
-                firewallRule.Name = txtRuleName.Text;
-                firewallRule.Description = txtDescription.Text;
-                firewallRule.Enabled = chkEnabled.Checked;
-                firewallRule.Direction = cmbDirection.SelectedIndex == 0 ? 1 : 2; // 1 = 入站, 2 = 出站
-                firewallRule.Action = cmbAction.SelectedIndex; // 0 = 阻止, 1 = 允许
-                
+                SafeSetProperty(firewallRule, "Name", txtRuleName.Text);
+                SafeSetProperty(firewallRule, "Description", txtDescription.Text);
+                SafeSetProperty(firewallRule, "Enabled", chkEnabled.Checked);
+                SafeSetProperty(firewallRule, "Direction", cmbDirection.SelectedIndex == 0 ? 1 : 2);
+                SafeSetProperty(firewallRule, "Action", cmbAction.SelectedIndex);
+
                 LogManager.Info(LangManager.GetText("logMessages.updateRule", txtRuleName.Text));
                 MessageBox.Show(LangManager.GetText("messages.ruleUpdated"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.Close();

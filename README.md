@@ -80,7 +80,7 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
 
 ### 删除防火墙规则
 
-#### Delete Single Rule / 删除单个规则
+####  删除单个规则
 
 1. 在监控列表中选择要删除的项目
 2. 点击"删除文件夹"按钮
@@ -144,26 +144,6 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
   - `RemoveFirewallRule`：删除单个防火墙规则
   - `ClearAllFirewallRules`：清空所有防火墙规则
 
-#### LogManager
-
-- 负责记录和管理应用程序日志
-- 主要方法：
-  - `Log`：记录日志
-  - `ReadLogs`：读取日志
-  - `ClearLogs`：清空日志
-
-#### LogsForm
-
-- 日志查看窗体，用于显示和管理日志
-
-#### RulesDetailsForm
-
-- 规则详情窗体，用于查看和编辑防火墙规则详情
-
-#### WhitelistForm
-
-- 白名单管理窗体，用于管理白名单
-
 #### FirewallService
 
 - 防火墙服务类，封装防火墙操作逻辑
@@ -173,8 +153,62 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
   - `UpdateFirewallRules`：更新所有防火墙规则
   - `ClearAllRules`：清空所有防火墙规则
   - `GetRuleDetails`：获取规则详细信息
+  - `GetPathHash`：生成文件路径的 SHA256 哈希值
+  - `SanitizeRuleName`：清理规则名称中的不安全字符
+  - `CheckRuleExists`：检查防火墙规则是否存在
 
-## 术实现
+#### LogManager
+
+- 负责记录和管理应用程序日志
+- 主要方法：
+  - `Log`：记录日志
+  - `ReadLogs`：读取日志
+  - `ClearLogs`：清空日志
+
+#### LangManager
+
+- 国际化管理类，负责加载和管理语言文件
+- 主要方法：
+  - `GetText`：获取翻译文本（支持格式化参数）
+  - `SetLanguage`：切换显示语言
+  - `GetCurrentLanguage`：获取当前语言代码
+- 内置回退翻译字典，语言文件加载失败时使用
+
+#### Config
+
+- 配置类，包含所有配置常量
+- 关键常量：
+  - `CRITICAL_PROGRAMS`：系统关键程序列表（20个系统进程）
+  - `RULE_NAME_PREFIX`：规则名称前缀
+  - `DEFAULT_LANGUAGE`：默认语言
+
+#### WhitelistForm
+
+- 白名单管理窗体，用于管理白名单
+- 使用 HashSet 实现 O(1) 查找缓存
+- 支持文件系统监控器，自动刷新缓存
+
+#### LogsForm
+
+- 日志查看窗体，用于显示和管理日志
+
+#### RulesDetailsForm
+
+- 规则详情窗体，用于查看和编辑防火墙规则详情
+
+### 测试项目
+
+| 文件 | 描述 |
+|------------|-------------------|
+| FirewallManager.Tests.csproj | 测试项目配置文件 |
+| FirewallServiceTests.cs | 防火墙服务单元测试 |
+| LogManagerTests.cs | 日志管理单元测试（含日志注入防御测试） |
+| LangManagerTests.cs | 国际化管理单元测试（含回退机制测试） |
+| PathSecurityTests.cs | 路径安全验证单元测试 |
+| WhitelistFormTests.cs | 白名单管理单元测试 |
+| ConfigTests.cs | 配置类单元测试 |
+
+## 技术实现
 
 ### 1. 防火墙规则管理
 
@@ -239,16 +273,59 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
 
 ### 编译项目
 
-1. 打开FirewallManager.csproj文件
-2. 选择"生成"->"生成解决方案"
-3. 编译成功后，可执行文件位于`bin\Debug\net10.0-windows`目录下
+#### Release 编译（发布版本，不含调试信息）
+
+```cmd
+dotnet build -c Release
+```
+
+编译成功后，可执行文件位于 `bin\Release\net10.0-windows` 目录下。
+
+#### Debug 编译（调试版本）
+
+```cmd
+dotnet build -c Debug
+```
+
+编译成功后，可执行文件位于 `bin\Debug\net10.0-windows` 目录下。
+
+> 注意：无论 Debug 还是 Release 编译，均不生成调试符号（DebugType=none, DebugSymbols=false）。
+> Release 编译会自动去除所有 `[Conditional("DEBUG")]` 方法。
+
+### 运行测试
+
+项目包含 xUnit 单元测试套件，共 76 个测试用例，覆盖所有核心功能模块：
+
+```cmd
+cd FirewallManager.Tests
+dotnet test
+```
+
+#### 测试覆盖范围
+
+| 测试模块 | 测试数 | 覆盖内容 |
+|------------|--------|------------------------------|
+| FirewallService | 17 | 规则管理、COM 类型安全、路径哈希、规则名称清理 |
+| LogManager | 20 | 日志注入防御、控制字符过滤、敏感信息脱敏、多级别日志 |
+| LangManager | 14 | 翻译获取、回退机制、格式化参数、语言切换 |
+| PathSecurity | 14 | 符号链接检测、路径规范化、系统目录防护、TOCTOU 缓解 |
+| WhitelistForm | 5 | 白名单查找、空值防护、缓存一致性 |
+| Config | 11 | 关键程序列表完整性、配置常量验证 |
 
 ### 调试说明
 
-- 以管理员身份运行Visual Studio，否则无法调试防火墙相关功能
+- 以管理员身份运行 Visual Studio，否则无法调试防火墙相关功能
 - 日志记录功能可以帮助调试问题
 
 ## 版本历史
+
+### v1.5.0
+
+- 创建 xUnit 自动化测试套件，共 76 个测试用例覆盖所有核心模块
+- 添加 FirewallService、LogManager、LangManager、PathSecurity、WhitelistForm、Config 单元测试
+- 修复 LangManager.FallbackTranslations 重复键 Bug
+- Release 编译优化，去除调试符号
+- 更新项目版本号到 1.5.0
 
 ### v1.4.1
 

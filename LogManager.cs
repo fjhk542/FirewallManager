@@ -14,6 +14,16 @@ namespace FirewallManager
     public static class LogManager
     {
         /// <summary>
+        /// 条件编译的调试输出方法
+        /// 仅在 DEBUG 模式下输出，Release 模式下被移除
+        /// </summary>
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void DebugLog(string message)
+        {
+            System.Diagnostics.Debug.WriteLine(message);
+        }
+
+        /// <summary>
         /// 日志文件路径
         /// </summary>
         private static readonly string _logFilePath;
@@ -216,7 +226,8 @@ namespace FirewallManager
                 {
                     // 过滤异常消息中的敏感信息
                     string filteredExceptionMessage = FilterSensitiveInfo(exception.Message);
-                    logMessage += $"\nException: {filteredExceptionMessage}\nStack Trace: {exception.StackTrace}";
+                    string filteredStackTrace = exception.StackTrace != null ? FilterSensitiveInfo(exception.StackTrace) : string.Empty;
+                    logMessage += $" Exception: {filteredExceptionMessage} Stack Trace: {filteredStackTrace}";
                 }
                 
                 if (logMessage.Length > 10000)
@@ -247,8 +258,8 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 // 日志写入失败，记录到调试输出以便排查问题
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.logWriteFailed", ex.Message));
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.stackTrace", ex.StackTrace));
+                DebugLog(LangManager.GetText("logMessages.logWriteFailed", ex.Message));
+                DebugLog(LangManager.GetText("logMessages.stackTrace", ex.StackTrace));
             }
         }
         
@@ -282,10 +293,9 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 过滤日志消息中的敏感信息
+        /// 过滤日志消息中的敏感信息和控制字符
         /// </summary>
         /// <param name="message">原始日志消息</param>
-        /// <param name="message">Original log message</param>
         /// <returns>过滤后的日志消息</returns>
         private static string FilterSensitiveInfo(string message)
         {
@@ -295,6 +305,20 @@ namespace FirewallManager
             }
             
             string filtered = message;
+            
+            // 移除控制字符（除了常见的换行和制表符），防止日志注入攻击
+            // 保留 \t (0x09), \n (0x0A), \r (0x0D) 用于格式化
+            // 移除其他所有控制字符 (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F)
+            filtered = System.Text.RegularExpressions.Regex.Replace(
+                filtered,
+                @"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
+                string.Empty);
+            
+            // 移除 Unicode 控制字符（如双向文本覆盖字符），防止日志伪造
+            filtered = System.Text.RegularExpressions.Regex.Replace(
+                filtered,
+                @"[\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]",
+                string.Empty);
             
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrEmpty(userProfile))
@@ -308,7 +332,11 @@ namespace FirewallManager
                 "[" + LangManager.GetText("logMessages.logManager.sensitiveInfo") + "]",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             
-            filtered = filtered.Replace("\r", "").Replace("\n", "");
+            // 用安全占位符替换换行符，防止伪造日志条目
+            // 但先保留异常堆栈的格式
+            filtered = filtered.Replace("\r\n", " [CRLF] ");
+            filtered = filtered.Replace("\r", " [CR] ");
+            filtered = filtered.Replace("\n", " [LF] ");
             
             if (filtered.Length > 8000)
             {
@@ -406,7 +434,7 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 // 读取日志失败，记录到调试输出
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.readLogFailed", ex.Message));
+                DebugLog(LangManager.GetText("logMessages.readLogFailed", ex.Message));
             }
             
             return logs;
@@ -462,7 +490,7 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 // 清理日志失败，记录到调试输出
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.clearLogFailed", ex.Message));
+                DebugLog(LangManager.GetText("logMessages.clearLogFailed", ex.Message));
             }
         }
 
@@ -480,8 +508,8 @@ namespace FirewallManager
             }
             catch (Exception ex)
             {
-                // 清空日志失败，记录到调试输出
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.clearLogEmptyFailed", ex.Message));
+                // 清理日志文件失败，记录到调试输出
+                DebugLog(LangManager.GetText("logMessages.clearLogEmptyFailed", ex.Message));
             }
         }
         

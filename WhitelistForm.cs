@@ -34,10 +34,16 @@ namespace FirewallManager
         private List<string> whitelist = new List<string>();
 
         /// <summary>
-        /// 静态白名单缓存
-        /// 用于快速检查应用程序是否在白名单中
+        /// 白名单缓存
+        /// 使用 HashSet 实现 O(1) 查找
+        /// 键为规范化后的路径（全小写）
         /// </summary>
-        private static List<string> whitelistCache = new List<string>();
+        private static HashSet<string> whitelistCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        
+        /// <summary>
+        /// 白名单缓存加载标志
+        /// </summary>
+        private static bool whitelistCacheLoaded = false;
 
         /// <summary>
         /// 白名单文件的最后修改时间
@@ -129,10 +135,20 @@ namespace FirewallManager
                 // 使用异步延迟代替 Thread.Sleep，避免阻塞事件处理线程
                 await Task.Delay(200, localCts.Token);
                 
+                // 再次检查是否已被取消（在延迟期间可能已被 ReleaseStaticResources 释放）
+                if (localCts.IsCancellationRequested)
+                {
+                    return;
+                }
+                
                 // 在后台线程中刷新缓存，避免阻塞UI线程
                 await Task.Run(() => RefreshWhitelistCache());
                 
                 LogManager.Info(LangManager.GetText("logMessages.whitelistFileChangedCacheRefreshed"));
+            }
+            catch (ObjectDisposedException)
+            {
+                // 资源已被释放（ReleaseStaticResources），静默退出
             }
             catch (OperationCanceledException)
             {
@@ -448,27 +464,46 @@ namespace FirewallManager
         
         /// <summary>
         /// 检查应用程序是否在白名单中
-        /// Check if application is in whitelist
-        /// 由于已有 FileSystemWatcher 监控文件变化并自动刷新缓存，
-        /// 此方法直接读取缓存，无需重复检查文件修改时间
-        /// Since FileSystemWatcher already monitors file changes and refreshes cache automatically,
-        /// this method directly reads from cache without checking file modification time
+        /// 使用缓存和规范化路径进行高效匹配，O(1) 查找复杂度
+        /// Check if application is in whitelist using O(1) hash lookup
         /// </summary>
         /// <param name="appPath">应用程序路径</param>
         /// <returns>是否在白名单中</returns>
         public static bool IsInWhitelist(string appPath)
         {
-            if (string.IsNullOrEmpty(appPath))
+            try
+            {
+                if (string.IsNullOrEmpty(appPath))
+                {
+                    return false;
+                }
+
+                // 确保缓存已加载
+                if (!whitelistCacheLoaded)
+                {
+                    RefreshWhitelistCache();
+                }
+
+                // 规范化路径
+                string normalizedAppPath;
+                try
+                {
+                    normalizedAppPath = Path.GetFullPath(appPath);
+                }
+                catch
+                {
+                    normalizedAppPath = appPath;
+                }
+
+                // 使用 HashSet 进行 O(1) 查找
+                lock (whitelistLock)
+                {
+                    return whitelistCache.Contains(normalizedAppPath);
+                }
+            }
+            catch
             {
                 return false;
-            }
-
-            string normalizedAppPath = Path.GetFullPath(appPath);
-
-            lock (whitelistLock)
-            {
-                return whitelistCache.Any(path => 
-                    Path.GetFullPath(path).Equals(normalizedAppPath, StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -482,17 +517,44 @@ namespace FirewallManager
             {
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
                 
-                if (File.Exists(configPath))
+                if (!File.Exists(configPath))
                 {
-                    // 获取锁，确保线程安全
                     lock (whitelistLock)
                     {
-                        string json = File.ReadAllText(configPath, Encoding.UTF8);
-                        whitelistCache = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
-                        lastModifiedTime = File.GetLastWriteTime(configPath);
-                        LogManager.Info(LangManager.GetText("logMessages.whitelistCacheRefreshedManual", whitelistCache.Count));
+                        whitelistCache.Clear();
+                        whitelistCacheLoaded = true;
+                    }
+                    return;
+                }
+
+                string json = File.ReadAllText(configPath, Encoding.UTF8);
+                var paths = JsonSerializer.Deserialize<List<string>>(json);
+
+                var newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (paths != null)
+                {
+                    foreach (var path in paths)
+                    {
+                        if (string.IsNullOrEmpty(path)) continue;
+                        try
+                        {
+                            string normalized = Path.GetFullPath(path);
+                            newCache.Add(normalized);
+                        }
+                        catch
+                        {
+                            newCache.Add(path);
+                        }
                     }
                 }
+
+                lock (whitelistLock)
+                {
+                    whitelistCache = newCache;
+                    whitelistCacheLoaded = true;
+                }
+
+                LogManager.Info(LangManager.GetText("logMessages.whitelistCacheRefreshedManual", whitelistCache.Count));
             }
             catch (Exception ex)
             {

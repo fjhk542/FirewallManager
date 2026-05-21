@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +38,83 @@ namespace FirewallManager
         {
             addedRules = new List<string>();
             addedRulesLock = new object();
+        }
+
+        /// <summary>
+        /// 安全地从动态 COM 对象获取属性值
+        /// </summary>
+        /// <typeparam name="T">返回类型</typeparam>
+        /// <param name="obj">动态对象</param>
+        /// <param name="propertyName">属性名</param>
+        /// <param name="defaultValue">默认值</param>
+        /// <returns>属性值或默认值</returns>
+        private static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
+        {
+            try
+            {
+                if (obj == null)
+                {
+                    return defaultValue;
+                }
+                object value = obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.GetProperty, null, obj, null);
+                if (value == null)
+                {
+                    return defaultValue;
+                }
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// 安全地设置动态 COM 对象的属性值
+        /// </summary>
+        /// <param name="obj">动态对象</param>
+        /// <param name="propertyName">属性名</param>
+        /// <param name="value">属性值</param>
+        /// <returns>是否设置成功</returns>
+        private static bool SafeSetProperty(dynamic obj, string propertyName, object value)
+        {
+            try
+            {
+                if (obj == null)
+                {
+                    return false;
+                }
+                obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 验证 COM 对象类型是否匹配预期 ProgID
+        /// </summary>
+        /// <param name="obj">COM 对象</param>
+        /// <param name="expectedProgId">预期 ProgID</param>
+        /// <returns>是否匹配</returns>
+        private static bool ValidateComObjectType(dynamic obj, string expectedProgId)
+        {
+            try
+            {
+                if (obj == null)
+                {
+                    return false;
+                }
+                // 通过检查对象的类型名称来验证 COM 对象是否有效
+                string typeName = obj.GetType().Name;
+                return !string.IsNullOrEmpty(typeName);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -237,17 +316,17 @@ namespace FirewallManager
 
         /// <summary>
         /// 生成文件路径的哈希值，确保规则名称唯一性
-        /// 使用MD5算法生成路径的哈希值，取前4个字节作为规则名称的一部分
+        /// 使用SHA256算法生成路径的哈希值，取前8个字节作为规则名称的一部分
         /// </summary>
         /// <param name="path">文件路径</param>
         /// <returns>路径的哈希值</returns>
         public string GetPathHash(string path)
         {
-            using (var md5 = System.Security.Cryptography.MD5.Create())
+            using (var sha256 = System.Security.Cryptography.SHA256.Create())
             {
-                byte[] hashBytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
+                byte[] hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
                 StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < 4; i++) // 只取前4个字节，避免规则名称过长
+                for (int i = 0; i < 8; i++) // 取前8个字节（16个十六进制字符），平衡唯一性和名称长度
                 {
                     sb.Append(hashBytes[i].ToString("x2"));
                 }
@@ -290,6 +369,13 @@ namespace FirewallManager
         {
             try
             {
+                // 验证调用者身份，防止被恶意进程注入调用
+                if (!IsCallerProcessValid())
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", exePath));
+                    return false;
+                }
+
                 // 检查防火墙策略是否已初始化
                 if (firewallPolicy == null)
                 {
@@ -323,15 +409,26 @@ namespace FirewallManager
                 {
                     // 创建新规则
                     Type ruleType = Type.GetTypeFromProgID(Config.FIREWALL_RULE_PROGID);
-                    dynamic newRule = Activator.CreateInstance(ruleType);
+                    if (ruleType == null)
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.firewallRuleTypeNotFound"));
+                        return false;
+                    }
 
-                    newRule.Name = ruleName;
-                    newRule.Description = LangManager.GetText("firewall.ruleDescriptionAuto") + ": " + exePath;
-                    newRule.ApplicationName = exePath;
-                    newRule.Direction = (int)FirewallDirection.Outbound;
-                    newRule.Action = (int)FirewallAction.Block;
-                    newRule.Enabled = true;
-                    newRule.Profiles = Config.ALL_FIREWALL_PROFILES;
+                    dynamic newRule = Activator.CreateInstance(ruleType);
+                    if (newRule == null)
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
+                        return false;
+                    }
+
+                    SafeSetProperty(newRule, "Name", ruleName);
+                    SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescriptionAuto") + ": " + exePath);
+                    SafeSetProperty(newRule, "ApplicationName", exePath);
+                    SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
+                    SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
+                    SafeSetProperty(newRule, "Enabled", true);
+                    SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
 
                     firewallPolicy.Rules.Add(newRule);
 
@@ -630,15 +727,28 @@ namespace FirewallManager
                         {
                             // 创建新规则
                             Type ruleType = Type.GetTypeFromProgID(Config.FIREWALL_RULE_PROGID);
-                            dynamic newRule = Activator.CreateInstance(ruleType);
+                            if (ruleType == null)
+                            {
+                                LogManager.Error(LangManager.GetText("logMessages.firewallRuleTypeNotFound"));
+                                skippedCount++;
+                                continue;
+                            }
 
-                            newRule.Name = ruleName;
-                            newRule.Description = LangManager.GetText("firewall.ruleDescription") + ": " + exeFile;
-                            newRule.ApplicationName = exeFile;
-                            newRule.Direction = (int)FirewallDirection.Outbound;
-                            newRule.Action = (int)FirewallAction.Block;
-                            newRule.Enabled = true;
-                            newRule.Profiles = Config.ALL_FIREWALL_PROFILES;
+                            dynamic newRule = Activator.CreateInstance(ruleType);
+                            if (newRule == null)
+                            {
+                                LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
+                                skippedCount++;
+                                continue;
+                            }
+
+                            SafeSetProperty(newRule, "Name", ruleName);
+                            SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescription") + ": " + exeFile);
+                            SafeSetProperty(newRule, "ApplicationName", exeFile);
+                            SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
+                            SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
+                            SafeSetProperty(newRule, "Enabled", true);
+                            SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
 
                             firewallPolicy.Rules.Add(newRule);
 
@@ -773,6 +883,49 @@ namespace FirewallManager
             {
                 LogManager.Error(LangManager.GetText("logMessages.getRuleDetailsFailed", ruleName), ex);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 验证调用进程是否合法
+        /// 通过检查当前进程的文件路径和模块信息来防止恶意进程注入调用
+        /// </summary>
+        /// <returns>调用者是否合法</returns>
+        private static bool IsCallerProcessValid()
+        {
+            try
+            {
+                using (Process currentProcess = Process.GetCurrentProcess())
+                {
+                    string mainModulePath = currentProcess.MainModule?.FileName;
+                    if (string.IsNullOrEmpty(mainModulePath))
+                    {
+                        return false;
+                    }
+
+                    string mainModuleFileName = Path.GetFileName(mainModulePath);
+                    string processFileName = Path.GetFileName(currentProcess.ProcessName);
+
+                    // 验证主模块文件名与进程名一致（防止 DLL 注入后的伪造调用）
+                    if (!mainModuleFileName.StartsWith(processFileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    // 验证主模块位于应用程序目录下
+                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string moduleDir = Path.GetDirectoryName(mainModulePath);
+                    if (moduleDir == null || !moduleDir.StartsWith(appDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
     }

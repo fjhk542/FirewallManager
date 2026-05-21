@@ -5,6 +5,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 此项目遵循 [语义化版本控制](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] - 2026-05-21
+
+### 新增
+- 创建 xUnit 自动化测试项目 (`FirewallManager.Tests`)，包含 76 个测试用例
+- 添加 FirewallService 单元测试（规则管理、COM 类型安全验证、路径哈希）
+- 添加 LogManager 单元测试（日志注入防御、控制字符过滤、敏感信息脱敏）
+- 添加 LangManager 单元测试（翻译回退机制、格式化参数、语言切换）
+- 添加 PathSecurity 单元测试（符号链接检测、路径规范化、TOCTOU 缓解）
+- 添加 WhitelistForm 单元测试（白名单查找、空值防护、缓存一致性）
+- 添加 Config 单元测试（关键程序列表完整性、配置常量验证）
+
+### 修改
+- 更新 FirewallManager.csproj，排除测试项目文件避免编译冲突
+- 更新 README.md，添加测试项目文档和 Release 编译说明
+- Release 编译（去除全部调试符号和 DEBUG 条件代码）
+- 项目版本号更新到 1.5.0
+
+### 修复
+- 修复 LangManager.FallbackTranslations 中的重复键问题（重复的 `logMessages.whitelistFileChangedCacheRefreshed` 条目）
+
 ## [1.4.1] - 2026-04-28
 
 ### 新增

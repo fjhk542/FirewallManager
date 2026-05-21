@@ -13,6 +13,15 @@ namespace FirewallManager
     /// </summary>
     public class LangManager
     {
+        /// <summary>
+        /// 条件编译的调试输出方法
+        /// 仅在 DEBUG 模式下输出，Release 模式下被移除
+        /// </summary>
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void DebugLog(string message)
+        {
+            System.Diagnostics.Debug.WriteLine(message);
+        }
         // 语言文件目录和默认语言已移至 Config 类
 
         /// <summary>
@@ -58,52 +67,49 @@ namespace FirewallManager
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string languageDir = Path.Combine(baseDir, Config.LANGUAGE_DIR);
                 
-                // 使用调试输出代替文件日志
-                System.Diagnostics.Debug.WriteLine($"[LangManager] Base directory: {baseDir}");
-                System.Diagnostics.Debug.WriteLine($"[LangManager] Language directory: {languageDir}");
+                DebugLog($"[LangManager] Base directory: {baseDir}");
+                DebugLog($"[LangManager] Language directory: {languageDir}");
                 
                 if (!Directory.Exists(languageDir))
                 {
-                    // 记录详细的错误信息，帮助定位问题
                     string errorMsg = $"Language directory not found: {languageDir}. " +
                                      $"Base directory: {baseDir}. " +
                                      $"Expected language files: {Config.DEFAULT_LANGUAGE}.json";
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                    DebugLog($"[LangManager] ERROR: {errorMsg}");
                     LogManager.Error(errorMsg);
                     return;
                 }
                 
-                System.Diagnostics.Debug.WriteLine($"[LangManager] Language directory exists");
+                DebugLog($"[LangManager] Language directory exists");
                 
                 var files = Directory.GetFiles(languageDir, "*.json");
                 if (files.Length == 0)
                 {
-                    // 记录详细的错误信息
                     string errorMsg = $"No language files found in directory: {languageDir}. " +
                                      $"Expected at least: {Config.DEFAULT_LANGUAGE}.json";
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                    DebugLog($"[LangManager] ERROR: {errorMsg}");
                     LogManager.Error(errorMsg);
                     return;
                 }
                 
-                System.Diagnostics.Debug.WriteLine($"[LangManager] Found {files.Length} language file(s)");
+                DebugLog($"[LangManager] Found {files.Length} language file(s)");
                 
                 int successCount = 0;
                 int failCount = 0;
                 
                 foreach (var file in files)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] Processing file: {file}");
+                    DebugLog($"[LangManager] Processing file: {file}");
                     try
                     {
                         string fileName = Path.GetFileNameWithoutExtension(file);
                         string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
-                        System.Diagnostics.Debug.WriteLine($"[LangManager] Extracted language code: {languageCode}");
+                        DebugLog($"[LangManager] Extracted language code: {languageCode}");
                         
                         if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
                         {
                             string errorMsg = $"Invalid language code format: {languageCode} from file: {file}. Expected 2-letter code (e.g., 'en', 'zh')";
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                            DebugLog($"[LangManager] ERROR: {errorMsg}");
                             LogManager.Warning(errorMsg);
                             failCount++;
                             continue;
@@ -114,23 +120,21 @@ namespace FirewallManager
                         if (string.IsNullOrWhiteSpace(jsonContent))
                         {
                             string errorMsg = $"Language file is empty: {file}";
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                            DebugLog($"[LangManager] ERROR: {errorMsg}");
                             LogManager.Warning(errorMsg);
                             failCount++;
                             continue;
                         }
                         
-                        // 尝试解析为动态对象
                         var jsonDoc = JsonDocument.Parse(jsonContent);
                         var translations = new Dictionary<string, string>();
                         
-                        // 递归处理所有嵌套节点
                         ProcessJsonNode(jsonDoc.RootElement, "", translations);
                         
                         if (translations.Count == 0)
                         {
                             string errorMsg = $"No translations found in language file: {file}";
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] WARNING: {errorMsg}");
+                            DebugLog($"[LangManager] WARNING: {errorMsg}");
                             LogManager.Warning(errorMsg);
                             failCount++;
                             continue;
@@ -144,32 +148,32 @@ namespace FirewallManager
                                 languageResources.Add(languageCode, translations);
                         }
                         
-                        System.Diagnostics.Debug.WriteLine($"[LangManager] Successfully loaded language: {languageCode} with {translations.Count} translations");
+                        DebugLog($"[LangManager] Successfully loaded language: {languageCode} with {translations.Count} translations");
                         successCount++;
                     }
                     catch (JsonException ex)
                     {
                         string errorMsg = $"Failed to parse JSON in language file: {file}. Error: {ex.Message}";
-                        System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                        DebugLog($"[LangManager] ERROR: {errorMsg}");
                         LogManager.Error(errorMsg, ex);
                         failCount++;
                     }
                     catch (Exception ex)
                     {
                         string errorMsg = $"Failed to load language file: {file}. Error: {ex.Message}";
-                        System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                        DebugLog($"[LangManager] ERROR: {errorMsg}");
                         LogManager.Error(errorMsg, ex);
                         failCount++;
                     }
                 }
                 
-                // 总结加载结果
                 string summaryMsg = $"Language files loading completed. Success: {successCount}, Failed: {failCount}";
-                System.Diagnostics.Debug.WriteLine($"[LangManager] {summaryMsg}");
+                DebugLog($"[LangManager] {summaryMsg}");
                 
                 if (successCount == 0)
                 {
                     LogManager.Error($"No language files loaded successfully. Application may not display text correctly.");
+                    LogManager.Info(LangManager.GetText("logMessages.langManager.loadFailedNoFallback"));
                 }
                 else if (failCount > 0)
                 {
@@ -183,7 +187,7 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 string errorMsg = $"Failed to initialize language manager: {ex.Message}";
-                System.Diagnostics.Debug.WriteLine($"[LangManager] FATAL ERROR: {errorMsg}");
+                DebugLog($"[LangManager] FATAL ERROR: {errorMsg}");
                 LogManager.Error(errorMsg, ex);
             }
         }
@@ -364,14 +368,11 @@ namespace FirewallManager
                     }
                     else if (placeholderCount == 0)
                     {
-                        // 没有占位符，直接返回文本
-                        // No placeholders, return text directly
                         return text;
                     }
                     else
                     {
-                        // Placeholder count doesn't match parameter count, log warning and return original text
-                        System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.langManager.paramMismatch", key));
+                        DebugLog(LangManager.GetText("logMessages.langManager.paramMismatch", key));
                         return text;
                     }
                 }
@@ -379,10 +380,101 @@ namespace FirewallManager
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine(LangManager.GetText("logMessages.langManager.getTranslationFailed", ex.Message));
-                return key; // Return original key if failed to get translation
+                DebugLog(LangManager.GetText("logMessages.langManager.getTranslationFailed", ex.Message));
+                return key;
             }
         }
+
+        /// <summary>
+        /// 内置回退翻译字典（语言文件加载失败时使用）
+        /// </summary>
+        private static readonly Dictionary<string, string> FallbackTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "messages.errorTitle", "Error" },
+            { "messages.warningTitle", "Warning" },
+            { "messages.infoTitle", "Information" },
+            { "messages.confirmTitle", "Confirm" },
+            { "messages.yes", "Yes" },
+            { "messages.no", "No" },
+            { "messages.ok", "OK" },
+            { "messages.cancel", "Cancel" },
+            { "messages.close", "Close" },
+            { "firewall.ruleDescription", "Block outbound traffic" },
+            { "status.idle", "Idle" },
+            { "status.running", "Running" },
+            { "status.rulesCount", "Rules: {0}" },
+            { "status.scanningTargets", "Scanning targets..." },
+            { "status.creatingRules", "Creating rules ({0} files found)..." },
+            { "status.processingFile", "Processing {0}/{1}: {2}" },
+            { "status.firewallNotInitialized", "Firewall not initialized" },
+            { "logMessages.startup", "Application started" },
+            { "logMessages.shutdown", "Application shutting down" },
+            { "logMessages.fileNotFound", "File not found: {0}" },
+            { "logMessages.nullOrEmptyPath", "Path is null or empty" },
+            { "logMessages.newFileDetected", "New file detected: {0}" },
+            { "logMessages.createRuleForExeFailed", "Failed to create rule for {0}: {1}" },
+            { "logMessages.firewallPolicyNotInitialized", "Firewall policy not initialized" },
+            { "logMessages.startInitializeFirewallComponents", "Starting firewall component initialization" },
+            { "logMessages.updateCompleted", "Update completed. Added: {0}, Skipped: {1}" },
+            { "logMessages.updateCanceled", "Update was canceled" },
+            { "logMessages.updateError", "Update error: {0}" },
+            { "logMessages.langManager.paramMismatch", "Parameter count mismatch for key: {0}" },
+            { "logMessages.langManager.getTranslationFailed", "Failed to get translation: {0}" },
+            { "logMessages.langManager.loadFailedNoFallback", "No language files loaded. Using built-in fallback translations." },
+            { "logMessages.invalidCallerDetected", "Invalid caller detected for path: {0}" },
+            { "logMessages.fileNotReadyAfterRetries", "File not ready after retries: {0}" },
+            { "logMessages.fileDisappearedBeforeProcessing", "File disappeared before processing: {0}" },
+            { "logMessages.rejectSymbolicLinkFile", "Rejected symbolic link file: {0}" },
+            { "logMessages.rejectExtendedLengthPath", "Rejected extended-length path: {0}" },
+            { "logMessages.processFileCreatedEventFailed", "Failed to process file created event" },
+            { "logMessages.logWriteFailed", "Failed to write log: {0}" },
+            { "logMessages.stackTrace", "Stack trace: {0}" },
+            { "logMessages.readLogFailed", "Failed to read log file: {0}" },
+            { "logMessages.clearLogFailed", "Failed to clear logs: {0}" },
+            { "logMessages.clearLogEmptyFailed", "Failed to clear log file: {0}" },
+            { "logMessages.whitelistCacheRefreshed", "Whitelist cache refreshed: {0} entries" },
+            { "logMessages.whitelistCacheRefreshedManual", "Whitelist cache manually refreshed: {0} entries" },
+            { "logMessages.refreshWhitelistCacheFailed", "Failed to refresh whitelist cache" },
+            { "logMessages.whitelistFileChangedCacheRefreshed", "Whitelist file changed, cache refreshed" },
+            { "logMessages.loadWhitelistItems", "Loaded {0} whitelist items" },
+            { "logMessages.loadWhitelistFailed", "Failed to load whitelist: {0}" },
+            { "logMessages.loadRuleDetailsFailed", "Failed to load rule details: {0}" },
+            { "logMessages.clearingAllRules", "Clearing all firewall rules" },
+            { "logMessages.deleteFirewallRule", "Deleted rule: {0}" },
+            { "logMessages.deleteRuleFailed", "Failed to delete rule {0}: {1}" },
+            { "logMessages.scanFirewallRulesFailed", "Failed to scan firewall rules" },
+            { "logMessages.clearRulesSuccess", "Successfully cleared {0} rules" },
+            { "logMessages.clearFirewallRulesFailed", "Failed to clear firewall rules" },
+            { "logMessages.createFirewallRule", "Created rule: {0} for {1}" },
+            { "logMessages.ruleExistsSkip", "Rule already exists, skipping: {0}" },
+            { "logMessages.processExeFailed", "Failed to process {0}: {1}" },
+            { "logMessages.autoCreateFirewallRule", "Auto-created rule: {0} for {1}" },
+            { "logMessages.syncRulesStart", "Starting rule synchronization..." },
+            { "logMessages.syncRulesCompleted", "Completed rule synchronization" },
+            { "logMessages.syncRulesFailed", "Failed to synchronize rules" },
+            { "logMessages.appInWhitelistSkipped", "Application in whitelist, skipped: {0}" },
+            { "logMessages.skipCriticalProgram", "Skipping critical program: {0}" },
+            { "logMessages.firewallRuleTypeNotFound", "Firewall rule COM type not found" },
+            { "logMessages.createFirewallRuleInstanceFailed", "Failed to create firewall rule instance" },
+            { "logMessages.foundExeFiles", "Found {0} executable files" },
+            { "logMessages.startScanningFolder", "Scanning folder: {0}" },
+            { "logMessages.scanCompleted", "Scan completed: {0} found {1} files" },
+            { "logMessages.scanFolderFailed", "Failed to scan folder {0}: {1}" },
+            { "logMessages.removingFolderRules", "Removing rules for folder: {0} ({1} files)" },
+            { "logMessages.removingFolderRulesCompleted", "Completed removing rules for folder: {0}" },
+            { "logMessages.removingFolderRulesFailed", "Failed to remove folder rules: {0}" },
+            { "logMessages.processFileFailed", "Failed to process file: {0}" },
+            { "logMessages.getRuleDetailsFailed", "Failed to get rule details: {0}" },
+            { "logMessages.checkRuleExistsFailed", "Failed to check rule existence: {0}" },
+            { "logMessages.firewallPolicyTypeNotFound", "Firewall policy COM type not found" },
+            { "logMessages.foundType", "Found type: {0}" },
+            { "logMessages.firewallPolicyInstanceCreated", "Firewall policy instance created" },
+            { "logMessages.tryCreateFirewallPolicyObject", "Attempting to create firewall policy object: {0}" },
+            { "logMessages.deleteWhitelistAppRule", "Deleted whitelist app rule: {0}" },
+            { "logMessages.deleteWhitelistAppRuleFailed", "Failed to delete whitelist app rule {0}: {1}" },
+            { "logMessages.updatingRules", "Updating firewall rules..." },
+            { "logMessages.whitelistFileChanged", "Whitelist file changed" },
+        };
 
         /// <summary>
         /// 内部方法：获取翻译文本
@@ -421,6 +513,13 @@ namespace FirewallManager
             {
                 translationCache.TryAdd(cacheKey, text);
                 return text;
+            }
+
+            // 如果语言文件加载失败，尝试从内置回退字典获取
+            if (FallbackTranslations.TryGetValue(key, out string fallbackText))
+            {
+                translationCache.TryAdd(cacheKey, fallbackText);
+                return fallbackText;
             }
 
             // 如果都没有找到，返回原始键值并缓存

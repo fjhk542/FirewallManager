@@ -86,7 +86,6 @@ namespace FirewallManager
             "taskhostw.exe",
             "dwm.exe",
             "winmgmt.exe",
-            "lsass.exe",
             "ntoskrnl.exe",
             "userinit.exe",
             "runtimebroker.exe",

@@ -222,8 +222,31 @@ namespace FirewallManager
                     return null;
                 }
 
+                // 去除路径中的特殊前缀（如 \\?\），防止绕过路径验证
+                // 这些前缀允许超出通常的 MAX_PATH 限制，可能被用于路径遍历攻击
+                string sanitizedPath = path;
+                if (sanitizedPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                {
+                    sanitizedPath = sanitizedPath.Substring(4);
+                }
+                if (sanitizedPath.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
+                {
+                    sanitizedPath = sanitizedPath.Substring(4);
+                }
+                if (sanitizedPath.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                {
+                    sanitizedPath = @"\\" + sanitizedPath.Substring(8);
+                }
+
                 // 规范化路径
-                string normalizedPath = Path.GetFullPath(path);
+                string normalizedPath = Path.GetFullPath(sanitizedPath);
+
+                // 验证规范化后的路径不以特殊前缀开头（防止 Path.GetFullPath 保留了特殊前缀）
+                if (normalizedPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectExtendedLengthPath", normalizedPath));
+                    return null;
+                }
 
                 // 检查符号链接
                 if (IsSymbolicLink(normalizedPath))
@@ -556,6 +579,7 @@ namespace FirewallManager
         
         /// <summary>
         /// 文件创建事件处理
+        /// 使用重试机制确保文件已完全写入后再处理，防止 TOCTOU 竞态条件
         /// </summary>
         /// <param name="sender">发送者</param>
         /// <param name="e">事件参数</param>
@@ -564,13 +588,102 @@ namespace FirewallManager
             try
             {
                 LogManager.Info(LangManager.GetText("logMessages.newFileDetected", e.FullPath));
+
+                // 使用重试机制等待文件写入完成
+                if (!WaitForFileReady(e.FullPath, maxRetries: 5, retryDelayMs: 200))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.fileNotReadyAfterRetries", e.FullPath));
+                    return;
+                }
+
+                // 在创建规则前再次验证文件是否存在且未被替换（防止 TOCTOU）
+                if (!File.Exists(e.FullPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.fileDisappearedBeforeProcessing", e.FullPath));
+                    return;
+                }
+
+                // 获取文件的完整路径并验证其与原始事件路径一致（防止符号链接替换攻击）
+                string fullPath = Path.GetFullPath(e.FullPath);
+                if (IsSymbolicLink(fullPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
+                    return;
+                }
+
                 // 为新创建的EXE文件创建防火墙规则
-                firewallService.CreateRuleForExe(e.FullPath);
+                firewallService.CreateRuleForExe(fullPath);
             }
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.processFileCreatedEventFailed"), ex);
             }
+        }
+
+        /// <summary>
+        /// 等待文件准备就绪（文件已完全写入）
+        /// 通过尝试打开文件并检查文件大小稳定性来判断
+        /// </summary>
+        /// <param name="filePath">文件路径</param>
+        /// <param name="maxRetries">最大重试次数</param>
+        /// <param name="retryDelayMs">重试间隔（毫秒）</param>
+        /// <returns>文件是否准备就绪</returns>
+        private static bool WaitForFileReady(string filePath, int maxRetries, int retryDelayMs)
+        {
+            long previousSize = -1;
+            int stableCount = 0;
+            const int requiredStableChecks = 2;
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    if (!File.Exists(filePath))
+                    {
+                        Thread.Sleep(retryDelayMs);
+                        continue;
+                    }
+
+                    // 尝试以独占方式打开文件，检查文件是否正在被写入
+                    using (var fileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        long currentSize = fileStream.Length;
+
+                        // 检查文件大小是否稳定（连续两次大小相同表示写入完成）
+                        if (currentSize == previousSize && currentSize > 0)
+                        {
+                            stableCount++;
+                            if (stableCount >= requiredStableChecks)
+                            {
+                                return true;
+                            }
+                        }
+                        else
+                        {
+                            stableCount = 0;
+                        }
+
+                        previousSize = currentSize;
+                    }
+                }
+                catch (IOException)
+                {
+                    // 文件正在被写入，等待后重试
+                    stableCount = 0;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // 权限不足，等待后重试
+                    stableCount = 0;
+                }
+
+                if (i < maxRetries - 1)
+                {
+                    Thread.Sleep(retryDelayMs);
+                }
+            }
+
+            return false;
         }
         
         /// <summary>
@@ -919,10 +1032,22 @@ namespace FirewallManager
                         return;
                     }
 
+                    // 验证反序列化结果中的每个元素都是字符串类型
+                    // 防止配置文件被篡改为嵌套对象或其他类型导致异常
+                    foreach (var p in paths)
+                    {
+                        if (p == null)
+                        {
+                            LogManager.Warning("Config file contains null entry, skipping");
+                            continue;
+                        }
+                    }
+
                     int addedCount = 0;
                     int skippedCount = 0;
                     foreach (var path in paths)
                     {
+                        if (path == null) continue;
                         bool exists = Directory.Exists(path) || (File.Exists(path) && path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
                         bool alreadyAdded = monitoredTargets.Any(t => t.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
 
