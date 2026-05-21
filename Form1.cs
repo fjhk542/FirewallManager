@@ -115,35 +115,60 @@ namespace FirewallManager
         /// 释放资源
         /// 释放所有托管和非托管资源，包括取消令牌源、事件对象、防火墙服务和文件监控器
         /// </summary>
+        /// <summary>
+        /// 资源是否已释放
+        /// </summary>
+        private bool resourcesReleased = false;
+
+        /// <summary>
+        /// 释放所有资源
+        /// 包括防火墙服务、文件监控器、事件对象等
+        /// </summary>
         private void ReleaseResources()
         {
-            try
+            // 使用双重检查锁定确保线程安全且只释放一次
+            if (resourcesReleased)
             {
-                // 释放 CancellationTokenSource
-                cancellationTokenSource?.Dispose();
-                
-                // 释放手动重置事件
-                taskCompletedEvent?.Dispose();
-                pauseEvent?.Dispose();
-                
-                // 释放防火墙服务
-                firewallService?.Dispose();
-                
-                // 释放文件监控器
-                foreach (var watcher in watchers)
-                {
-                    watcher.Dispose();
-                }
-                watchers.Clear();
-                
-                // 释放白名单静态资源
-                WhitelistForm.ReleaseStaticResources();
-                
-                LogManager.Info(LangManager.GetText("logMessages.resourcesReleased"));
+                return;
             }
-            catch (Exception ex)
+
+            lock (this)
             {
-                LogManager.Error(LangManager.GetText("logMessages.releaseResourcesFailed"), ex);
+                if (resourcesReleased)
+                {
+                    return;
+                }
+
+                try
+                {
+                    // 释放 CancellationTokenSource
+                    cancellationTokenSource?.Dispose();
+                    
+                    // 释放手动重置事件
+                    taskCompletedEvent?.Dispose();
+                    pauseEvent?.Dispose();
+                    
+                    // 释放防火墙服务
+                    firewallService?.Dispose();
+                    
+                    // 释放文件监控器
+                    foreach (var watcher in watchers)
+                    {
+                        watcher.Dispose();
+                    }
+                    watchers.Clear();
+                    
+                    // 释放白名单静态资源
+                    WhitelistForm.ReleaseStaticResources();
+                    
+                    LogManager.Info(LangManager.GetText("logMessages.resourcesReleased"));
+                    
+                    resourcesReleased = true;
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.releaseResourcesFailed"), ex);
+                }
             }
         }
 
@@ -181,6 +206,13 @@ namespace FirewallManager
                 // 规范化路径
                 string normalizedPath = Path.GetFullPath(path);
 
+                // 检查符号链接
+                if (IsSymbolicLink(normalizedPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLink", normalizedPath));
+                    return null;
+                }
+
                 // 检查路径是否存在
                 if (isDirectory && !Directory.Exists(normalizedPath))
                 {
@@ -205,6 +237,33 @@ namespace FirewallManager
             {
                 LogManager.Error(LangManager.GetText("logMessages.pathValidationFailed", path), ex);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 检测路径是否为符号链接
+        /// </summary>
+        /// <param name="path">要检测的路径</param>
+        /// <returns>是否为符号链接</returns>
+        private static bool IsSymbolicLink(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    var dirInfo = new DirectoryInfo(path);
+                    return dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+                }
+                else if (File.Exists(path))
+                {
+                    var fileInfo = new FileInfo(path);
+                    return fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -258,8 +317,8 @@ namespace FirewallManager
                 // 确保托盘图标在InitializeComponent后就显示
                 InitializeTrayIcon();
                 
-                // 加载监控目标（无论防火墙是否初始化成功都需要加载）
-                LoadMonitoredTargets();
+                // 初始化防火墙组件（包括加载监控目标）
+                InitializeFirewallComponents();
             }
             catch (Exception ex)
             {

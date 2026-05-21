@@ -413,9 +413,17 @@ namespace FirewallManager
         /// <returns>是否在白名单中</returns>
         public static bool IsInWhitelist(string appPath)
         {
+            if (string.IsNullOrEmpty(appPath))
+            {
+                return false;
+            }
+
+            string normalizedAppPath = Path.GetFullPath(appPath);
+
             lock (whitelistLock)
             {
-                return whitelistCache.Any(path => path.Equals(appPath, StringComparison.OrdinalIgnoreCase));
+                return whitelistCache.Any(path => 
+                    Path.GetFullPath(path).Equals(normalizedAppPath, StringComparison.OrdinalIgnoreCase));
             }
         }
 

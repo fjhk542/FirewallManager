@@ -243,6 +243,7 @@
     "logPathContainsSymbolicLink": "日志文件路径包含符号链接",
     "logPathInitFailed": "日志路径初始化失败: {0}",
     "rejectSystemRoot": "拒绝添加系统根目录: {0}",
+    "rejectSymbolicLink": "拒绝符号链接路径: {0}",
     "pathValidationFailed": "路径验证失败: {0}",
     "ruleCheckResult": "规则检查结果: {0} - 存在={1}",
     "ruleCheckFailed": "检查规则失败: {0}",

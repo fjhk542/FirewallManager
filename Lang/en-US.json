@@ -225,6 +225,7 @@
     "logPathContainsSymbolicLink": "Log file path contains symbolic link",
     "logPathInitFailed": "Failed to initialize log path: {0}",
     "rejectSystemRoot": "Rejecting system root directory: {0}",
+    "rejectSymbolicLink": "Rejecting symbolic link path: {0}",
     "pathValidationFailed": "Path validation failed: {0}",
     "ruleCheckResult": "Rule check result: {0} - exists={1}",
     "ruleCheckFailed": "Failed to check rule: {0}",

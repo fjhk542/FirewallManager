@@ -66,6 +66,7 @@ namespace FirewallManager
 
         /// <summary>
         /// 关键程序列表
+        /// 这些程序不应被阻止，否则可能导致系统不稳定
         /// </summary>
         public static readonly string[] CRITICAL_PROGRAMS = new[]
         {
@@ -74,19 +75,39 @@ namespace FirewallManager
             "lsass.exe",
             "csrss.exe",
             "wininit.exe",
-            "services.exe"
+            "services.exe",
+            "spoolsv.exe",
+            "winlogon.exe",
+            "msdtc.exe",
+            "smss.exe",
+            "system.exe",
+            "idle.exe",
+            "conhost.exe",
+            "taskhostw.exe",
+            "dwm.exe",
+            "winmgmt.exe",
+            "lsass.exe",
+            "ntoskrnl.exe",
+            "userinit.exe",
+            "runtimebroker.exe",
+            "taskmgr.exe"
         };
 
         /// <summary>
         /// 获取应用程序数据目录中的文件路径
-        /// 现在修改为保存在当前应用程序运行目录下
+        /// 使用 LocalApplicationData 目录，避免DLL劫持风险
         /// </summary>
         /// <param name="fileName">文件名</param>
         /// <returns>完整的文件路径</returns>
         public static string GetAppDataFilePath(string fileName)
         {
-            // 使用当前应用程序运行目录
-            string appFolderPath = AppDomain.CurrentDomain.BaseDirectory;
+            // 使用 LocalApplicationData 目录，避免DLL劫持风险
+            string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appFolderPath = Path.Combine(appDataPath, APP_DATA_DIR);
+            
+            // 确保目录存在
+            Directory.CreateDirectory(appFolderPath);
+            
             return Path.Combine(appFolderPath, fileName);
         }
     }

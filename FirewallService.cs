@@ -61,22 +61,23 @@ namespace FirewallManager
                 {
                     addedRules.Clear();
                 }
-            }
 
-            // 释放非托管资源
-            if (firewallPolicy != null)
-            {
-                try
+                // 释放COM对象（只在显式Dispose时释放，避免在析构函数中访问托管资源）
+                if (firewallPolicy != null)
                 {
-                    System.Runtime.InteropServices.Marshal.ReleaseComObject(firewallPolicy);
-                    firewallPolicy = null;
-                    LogManager.Info(LangManager.GetText("logMessages.firewallPolicyCOMObjectReleased"));
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Error(LangManager.GetText("logMessages.releaseFirewallPolicyCOMObjectFailed"), ex);
+                    try
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(firewallPolicy);
+                        firewallPolicy = null;
+                        LogManager.Info(LangManager.GetText("logMessages.firewallPolicyCOMObjectReleased"));
+                    }
+                    catch (Exception ex)
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.releaseFirewallPolicyCOMObjectFailed"), ex);
+                    }
                 }
             }
+            // 注意：析构函数（Dispose(false)）不应释放COM对象，因为此时LogManager等托管资源可能已被回收
         }
 
         /// <summary>
@@ -155,6 +156,13 @@ namespace FirewallManager
         {
             try
             {
+                // 检查防火墙策略是否已初始化
+                if (firewallPolicy == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
+                    return;
+                }
+
                 var rules = firewallPolicy.Rules;
                 var currentRules = new List<string>();
 
@@ -345,6 +353,13 @@ namespace FirewallManager
             {
                 LogManager.Info(LangManager.GetText("logMessages.clearingAllRules"));
 
+                // 检查防火墙策略是否已初始化
+                if (firewallPolicy == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
+                    return deletedCount;
+                }
+
                 // 1. 首先删除本地列表中的规则
                 List<string> rulesToProcess;
                 lock (addedRulesLock)
@@ -481,6 +496,14 @@ namespace FirewallManager
                 LogManager.Info(LangManager.GetText("logMessages.updatingRules"));
                 updateUI("Running", LangManager.GetText("status.scanningTargets"));
 
+                // 检查防火墙策略是否已初始化
+                if (firewallPolicy == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
+                    updateUI("Idle", LangManager.GetText("status.firewallNotInitialized"));
+                    return (addedCount, skippedCount);
+                }
+
                 // 同步本地规则列表与实际防火墙规则
                 SyncRulesList();
 
@@ -504,9 +527,9 @@ namespace FirewallManager
                         try
                         {
                             LogManager.Info(LangManager.GetText("logMessages.startScanningFolder", target.Path));
-                            var files = Directory.GetFiles(target.Path, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories);
+                            string[] files = Directory.GetFiles(target.Path, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories);
                             LogManager.Info(LangManager.GetText("logMessages.scanCompleted", target.Path, files.Length));
-                            return files.ToList();
+                            return new List<string>(files);
                         }
                         catch (Exception ex)
                         {
@@ -660,7 +683,8 @@ namespace FirewallManager
                 {
                     try
                     {
-                        exeFiles = Directory.GetFiles(folderPath, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories).ToList();
+                        string[] files = Directory.GetFiles(folderPath, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories);
+                        exeFiles = new List<string>(files);
                     }
                     catch (Exception ex)
                     {

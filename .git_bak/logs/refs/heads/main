@@ -1,5 +1,0 @@
-0000000000000000000000000000000000000000 f3dc4bf9e4c77ab104def54025e01178a7ad5f5b fjhk542 <tjliying@gmail.com> 1777340892 +0800	commit (initial): initial commit
-f3dc4bf9e4c77ab104def54025e01178a7ad5f5b f3dc4bf9e4c77ab104def54025e01178a7ad5f5b fjhk542 <tjliying@gmail.com> 1777340892 +0800	Branch: renamed refs/heads/main to refs/heads/main
-f3dc4bf9e4c77ab104def54025e01178a7ad5f5b c85973e7ee34fd9fa02c0ffd50adccfed38642c6 fjhk542 <tjliying@gmail.com> 1777342067 +0800	commit (merge): Merge branch 'main' of https://github.com/fjhk542/FirewallManager
-c85973e7ee34fd9fa02c0ffd50adccfed38642c6 998b085908ee9fac3c7124e75c10514f6b21246a fjhk542 <tjliying@gmail.com> 1777367939 +0800	commit: feat(i18n): 添加多语言支持并优化日志国际化
-998b085908ee9fac3c7124e75c10514f6b21246a 9793b3ac33c1440a493e0657b51529ccebe61d61 fjhk542 <tjliying@gmail.com> 1777440631 +0800	commit (amend): feat(i18n): 添加多语言支持并优化日志国际化
