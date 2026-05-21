@@ -141,8 +141,27 @@ namespace FirewallManager
 
                 try
                 {
-                    // 释放 CancellationTokenSource
-                    cancellationTokenSource?.Dispose();
+                    // 安全释放 CancellationTokenSource
+                    if (cancellationTokenSource != null)
+                    {
+                        try
+                        {
+                            // 先取消，确保所有使用该令牌的任务都能收到取消信号
+                            if (!cancellationTokenSource.IsCancellationRequested)
+                            {
+                                cancellationTokenSource.Cancel();
+                            }
+                            cancellationTokenSource.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Error(LangManager.GetText("logMessages.disposeCancellationTokenSourceFailed"), ex);
+                        }
+                        finally
+                        {
+                            cancellationTokenSource = null;
+                        }
+                    }
                     
                     // 释放手动重置事件
                     taskCompletedEvent?.Dispose();
@@ -242,6 +261,8 @@ namespace FirewallManager
 
         /// <summary>
         /// 检测路径是否为符号链接
+        /// 使用 FileSystemInfo.LinkTarget 属性（.NET 5+）来精确检测真正的符号链接
+        /// 避免将挂载点、联接点误判为符号链接
         /// </summary>
         /// <param name="path">要检测的路径</param>
         /// <returns>是否为符号链接</returns>
@@ -252,17 +273,22 @@ namespace FirewallManager
                 if (Directory.Exists(path))
                 {
                     var dirInfo = new DirectoryInfo(path);
-                    return dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+                    // 使用 LinkTarget 属性检测真正的符号链接
+                    // LinkTarget 只对符号链接返回非 null 值，对挂载点和联接点返回 null
+                    return !string.IsNullOrEmpty(dirInfo.LinkTarget);
                 }
                 else if (File.Exists(path))
                 {
                     var fileInfo = new FileInfo(path);
-                    return fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+                    // 使用 LinkTarget 属性检测真正的符号链接
+                    return !string.IsNullOrEmpty(fileInfo.LinkTarget);
                 }
                 return false;
             }
-            catch
+            catch (Exception ex)
             {
+                // 如果检测失败，记录警告并返回 false（允许路径通过）
+                LogManager.Warning(LangManager.GetText("logMessages.checkSymbolicLinkFailed", path, ex.Message));
                 return false;
             }
         }
@@ -340,6 +366,47 @@ namespace FirewallManager
             // 记录权限状态
             bool isAdmin = IsRunningAsAdministrator();
             LogManager.Info(LangManager.GetText("logMessages.permissionStatus", isAdmin ? LangManager.GetText("messages.admin") : LangManager.GetText("messages.user")));
+            
+            // 根据权限级别配置功能
+            if (isAdmin)
+            {
+                // 管理员权限：启用所有防火墙管理功能
+                LogManager.Info(LangManager.GetText("logMessages.adminModeEnabled"));
+                
+                // 启用所有管理功能按钮（这些按钮在 InitializeFirewallComponents 中会根据防火墙初始化状态再次设置）
+                SafeInvoke(() =>
+                {
+                    addButton.Enabled = true;
+                    updateRulesButton.Enabled = true;
+                    clearRulesButton.Enabled = true;
+                    removeFolderButton.Enabled = true;
+                    whitelistButton.Enabled = true;
+                    pauseButton.Enabled = false;
+                    resumeButton.Enabled = false;
+                    stopButton.Enabled = false;
+                });
+            }
+            else
+            {
+                // 普通用户权限：禁用需要管理员权限的功能
+                LogManager.Warning(LangManager.GetText("logMessages.userModeLimited"));
+                
+                // 禁用需要管理员权限的功能
+                SafeInvoke(() =>
+                {
+                    addButton.Enabled = false;
+                    updateRulesButton.Enabled = false;
+                    clearRulesButton.Enabled = false;
+                    removeFolderButton.Enabled = false;
+                    whitelistButton.Enabled = false;
+                    pauseButton.Enabled = false;
+                    resumeButton.Enabled = false;
+                    stopButton.Enabled = false;
+                    
+                    // 更新状态标签
+                    statusLabel.Text = LangManager.GetText("status.adminRequired");
+                });
+            }
         }
 
         /// <summary>
@@ -531,6 +598,40 @@ namespace FirewallManager
         #region UI相关方法
 
         /// <summary>
+        /// 安全地重新创建 CancellationTokenSource
+        /// Safely recreate CancellationTokenSource
+        /// </summary>
+        /// <returns>新创建的 CancellationTokenSource</returns>
+        private CancellationTokenSource SafeRecreateCancellationTokenSource()
+        {
+            // 安全释放旧的 CancellationTokenSource
+            if (cancellationTokenSource != null)
+            {
+                try
+                {
+                    // 先取消，确保所有使用该令牌的任务都能收到取消信号
+                    if (!cancellationTokenSource.IsCancellationRequested)
+                    {
+                        cancellationTokenSource.Cancel();
+                    }
+                    cancellationTokenSource.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.disposeCancellationTokenSourceFailed"), ex);
+                }
+                finally
+                {
+                    cancellationTokenSource = null;
+                }
+            }
+            
+            // 创建新的 CancellationTokenSource
+            cancellationTokenSource = new CancellationTokenSource();
+            return cancellationTokenSource;
+        }
+
+        /// <summary>
         /// 设置UI控件文本
         /// Set UI control text
         /// </summary>
@@ -673,13 +774,20 @@ namespace FirewallManager
 
         /// <summary>
         /// 缓存防火墙规则
-        /// Cache firewall rules
+        /// Cache firewall rules by syncing with actual firewall
         /// </summary>
         private void CacheFirewallRules()
         {
             try
             {
                 LogManager.Info(LangManager.GetText("logMessages.refreshCache"));
+                
+                // 同步防火墙规则列表
+                firewallService.SyncRulesList();
+                
+                // 获取缓存的规则数量
+                var ruleNames = firewallService.GetAllRuleNames();
+                LogManager.Info(LangManager.GetText("logMessages.cachedRulesCount", ruleNames.Count));
             }
             catch (Exception ex)
             {
@@ -689,13 +797,20 @@ namespace FirewallManager
 
         /// <summary>
         /// 加载监控文件夹
-        /// Load monitored folders
+        /// Load monitored folders and sync firewall rules
         /// </summary>
         private void LoadMonitoredFolders()
         {
             try
             {
-                // 这里可以从配置文件加载监控文件夹
+                LogManager.Info(LangManager.GetText("logMessages.loadingMonitoredFolders"));
+                
+                // 同步防火墙规则列表（从实际防火墙中加载已有规则）
+                firewallService.SyncRulesList();
+                
+                // 获取规则数量
+                var ruleNames = firewallService.GetAllRuleNames();
+                LogManager.Info(LangManager.GetText("logMessages.loadedFirewallRules", ruleNames.Count));
             }
             catch (Exception ex)
             {
@@ -710,13 +825,20 @@ namespace FirewallManager
 
         /// <summary>
         /// 加载已添加的规则
-        /// Load added rules
+        /// Load added rules from firewall and sync with local cache
         /// </summary>
         private void LoadAddedRules()
         {
             try
             {
-                // 这里可以从配置文件加载已添加的规则
+                LogManager.Info(LangManager.GetText("logMessages.loadingAddedRules"));
+                
+                // 同步本地规则列表与实际防火墙规则
+                firewallService.SyncRulesList();
+                
+                // 获取规则数量
+                var ruleNames = firewallService.GetAllRuleNames();
+                LogManager.Info(LangManager.GetText("logMessages.syncedRulesCount", ruleNames.Count));
             }
             catch (Exception ex)
             {
@@ -903,10 +1025,12 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private void addFolderToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 打开文件夹选择对话框
+            // 使用 FolderBrowserDialog 选择文件夹
             using (var folderDialog = new FolderBrowserDialog())
             {
                 folderDialog.Description = LangManager.GetText("buttons.addFolder");
+                folderDialog.UseDescriptionForTitle = true; // 在 Windows Vista 及以上版本中显示标题
+                
                 if (folderDialog.ShowDialog() == DialogResult.OK)
                 {
                     string selectedPath = folderDialog.SelectedPath;
@@ -947,9 +1071,8 @@ namespace FirewallManager
             // 启动更新规则任务
             if (currentState == WorkState.Idle)
             {
-                // 释放旧的 CancellationTokenSource
-                cancellationTokenSource?.Dispose();
-                cancellationTokenSource = new CancellationTokenSource();
+                // 安全地重新创建 CancellationTokenSource
+                SafeRecreateCancellationTokenSource();
                 taskCompletedEvent.Reset();
                 
                 workTask = Task.Run(async () =>
@@ -1072,9 +1195,8 @@ namespace FirewallManager
             // 白名单保存后，更新防火墙规则
             if (currentState == WorkState.Idle)
             {
-                // 释放旧的 CancellationTokenSource
-                cancellationTokenSource?.Dispose();
-                cancellationTokenSource = new CancellationTokenSource();
+                // 安全地重新创建 CancellationTokenSource
+                SafeRecreateCancellationTokenSource();
                 taskCompletedEvent.Reset();
                 
                 workTask = Task.Run(async () =>
@@ -1435,9 +1557,8 @@ namespace FirewallManager
             // 启动更新规则任务
             if (currentState == WorkState.Idle)
             {
-                // 释放旧的 CancellationTokenSource
-                cancellationTokenSource?.Dispose();
-                cancellationTokenSource = new CancellationTokenSource();
+                // 安全地重新创建 CancellationTokenSource
+                SafeRecreateCancellationTokenSource();
                 taskCompletedEvent.Reset();
                 
                 workTask = Task.Run(async () =>

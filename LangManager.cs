@@ -59,62 +59,132 @@ namespace FirewallManager
                 string languageDir = Path.Combine(baseDir, Config.LANGUAGE_DIR);
                 
                 // 使用调试输出代替文件日志
-                System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.baseDir", baseDir)}");
-                System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.languageDir", languageDir)}");
+                System.Diagnostics.Debug.WriteLine($"[LangManager] Base directory: {baseDir}");
+                System.Diagnostics.Debug.WriteLine($"[LangManager] Language directory: {languageDir}");
                 
-                if (Directory.Exists(languageDir))
+                if (!Directory.Exists(languageDir))
                 {
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.dirExists")}");
-                    
-                    var files = Directory.GetFiles(languageDir, "*.json");
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.foundFiles", files.Length)}");
-                    
-                    foreach (var file in files)
+                    // 记录详细的错误信息，帮助定位问题
+                    string errorMsg = $"Language directory not found: {languageDir}. " +
+                                     $"Base directory: {baseDir}. " +
+                                     $"Expected language files: {Config.DEFAULT_LANGUAGE}.json";
+                    System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                    LogManager.Error(errorMsg);
+                    return;
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"[LangManager] Language directory exists");
+                
+                var files = Directory.GetFiles(languageDir, "*.json");
+                if (files.Length == 0)
+                {
+                    // 记录详细的错误信息
+                    string errorMsg = $"No language files found in directory: {languageDir}. " +
+                                     $"Expected at least: {Config.DEFAULT_LANGUAGE}.json";
+                    System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                    LogManager.Error(errorMsg);
+                    return;
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"[LangManager] Found {files.Length} language file(s)");
+                
+                int successCount = 0;
+                int failCount = 0;
+                
+                foreach (var file in files)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[LangManager] Processing file: {file}");
+                    try
                     {
-                        System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.processingFile", file)}");
-                        try
+                        string fileName = Path.GetFileNameWithoutExtension(file);
+                        string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
+                        System.Diagnostics.Debug.WriteLine($"[LangManager] Extracted language code: {languageCode}");
+                        
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
                         {
-                            string fileName = Path.GetFileNameWithoutExtension(file);
-                            string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.extractCode", languageCode)}");
-                            
-                            if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.invalidCode", languageCode)}");
-                                continue;
-                            }
-                            
-                            string jsonContent = File.ReadAllText(file, System.Text.Encoding.UTF8);
-                            // 尝试解析为动态对象
-                            var jsonDoc = JsonDocument.Parse(jsonContent);
-                            var translations = new Dictionary<string, string>();
-                            
-                            // 递归处理所有嵌套节点
-                            ProcessJsonNode(jsonDoc.RootElement, "", translations);
-                            
-                            lock (resourceLock)
-                            {
-                                if (languageResources.ContainsKey(languageCode))
-                                    languageResources[languageCode] = translations;
-                                else
-                                    languageResources.Add(languageCode, translations);
-                            }
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.loadSuccess", languageCode, translations.Count)}");
+                            string errorMsg = $"Invalid language code format: {languageCode} from file: {file}. Expected 2-letter code (e.g., 'en', 'zh')";
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                            LogManager.Warning(errorMsg);
+                            failCount++;
+                            continue;
                         }
-                        catch (Exception ex)
+                        
+                        string jsonContent = File.ReadAllText(file, System.Text.Encoding.UTF8);
+                        
+                        if (string.IsNullOrWhiteSpace(jsonContent))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.loadFileFailed", file, ex.Message)}");
+                            string errorMsg = $"Language file is empty: {file}";
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                            LogManager.Warning(errorMsg);
+                            failCount++;
+                            continue;
                         }
+                        
+                        // 尝试解析为动态对象
+                        var jsonDoc = JsonDocument.Parse(jsonContent);
+                        var translations = new Dictionary<string, string>();
+                        
+                        // 递归处理所有嵌套节点
+                        ProcessJsonNode(jsonDoc.RootElement, "", translations);
+                        
+                        if (translations.Count == 0)
+                        {
+                            string errorMsg = $"No translations found in language file: {file}";
+                            System.Diagnostics.Debug.WriteLine($"[LangManager] WARNING: {errorMsg}");
+                            LogManager.Warning(errorMsg);
+                            failCount++;
+                            continue;
+                        }
+                        
+                        lock (resourceLock)
+                        {
+                            if (languageResources.ContainsKey(languageCode))
+                                languageResources[languageCode] = translations;
+                            else
+                                languageResources.Add(languageCode, translations);
+                        }
+                        
+                        System.Diagnostics.Debug.WriteLine($"[LangManager] Successfully loaded language: {languageCode} with {translations.Count} translations");
+                        successCount++;
                     }
+                    catch (JsonException ex)
+                    {
+                        string errorMsg = $"Failed to parse JSON in language file: {file}. Error: {ex.Message}";
+                        System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                        LogManager.Error(errorMsg, ex);
+                        failCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        string errorMsg = $"Failed to load language file: {file}. Error: {ex.Message}";
+                        System.Diagnostics.Debug.WriteLine($"[LangManager] ERROR: {errorMsg}");
+                        LogManager.Error(errorMsg, ex);
+                        failCount++;
+                    }
+                }
+                
+                // 总结加载结果
+                string summaryMsg = $"Language files loading completed. Success: {successCount}, Failed: {failCount}";
+                System.Diagnostics.Debug.WriteLine($"[LangManager] {summaryMsg}");
+                
+                if (successCount == 0)
+                {
+                    LogManager.Error($"No language files loaded successfully. Application may not display text correctly.");
+                }
+                else if (failCount > 0)
+                {
+                    LogManager.Warning(summaryMsg);
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.dirNotExists")}");
+                    LogManager.Info(summaryMsg);
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[LangManager] {LangManager.GetText("logMessages.langManager.loadFailed", ex.Message)}");
+                string errorMsg = $"Failed to initialize language manager: {ex.Message}";
+                System.Diagnostics.Debug.WriteLine($"[LangManager] FATAL ERROR: {errorMsg}");
+                LogManager.Error(errorMsg, ex);
             }
         }
         

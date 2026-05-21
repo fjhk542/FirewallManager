@@ -18,6 +18,11 @@ namespace FirewallManager
         bool InitializeFirewallComponents();
 
         /// <summary>
+        /// 同步本地规则列表与实际防火墙规则
+        /// </summary>
+        void SyncRulesList();
+
+        /// <summary>
         /// 检查防火墙规则是否存在
         /// </summary>
         /// <param name="ruleName">规则名称</param>

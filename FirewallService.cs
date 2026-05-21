@@ -77,7 +77,24 @@ namespace FirewallManager
                     }
                 }
             }
-            // 注意：析构函数（Dispose(false)）不应释放COM对象，因为此时LogManager等托管资源可能已被回收
+            else
+            {
+                // 从析构函数调用时，只释放非托管资源（COM对象）
+                // 注意：此时不能访问托管资源（如 LogManager），因为它们可能已被 GC 回收
+                if (firewallPolicy != null)
+                {
+                    try
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(firewallPolicy);
+                        firewallPolicy = null;
+                    }
+                    catch
+                    {
+                        // 在析构函数中不能记录日志，因为 LogManager 可能已被回收
+                        // 静默忽略异常
+                    }
+                }
+            }
         }
 
         /// <summary>

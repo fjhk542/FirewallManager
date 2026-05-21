@@ -19,6 +19,17 @@ namespace FirewallManager
         /// <param name="name">规则名称</param>
         public RuleDetailsForm(dynamic rule, string name)
         {
+            // 验证参数
+            if (rule == null)
+            {
+                throw new ArgumentNullException(nameof(rule), LangManager.GetText("messages.ruleCannotBeNull"));
+            }
+            
+            if (string.IsNullOrEmpty(name))
+            {
+                throw new ArgumentNullException(nameof(name), LangManager.GetText("messages.ruleNameCannotBeNull"));
+            }
+            
             InitializeComponent();
             firewallRule = rule;
             ruleName = name;
@@ -59,18 +70,65 @@ namespace FirewallManager
         {
             try
             {
-                txtRuleName.Text = ruleName;
-                txtDescription.Text = firewallRule.Description;
-                txtApplicationName.Text = firewallRule.ApplicationName;
-                chkEnabled.Checked = firewallRule.Enabled;
+                // 安全访问 dynamic 对象的属性
+                txtRuleName.Text = ruleName ?? string.Empty;
                 
-                // 设置方向
-                int direction = firewallRule.Direction;
-                cmbDirection.SelectedIndex = direction == 1 ? 0 : 1; // 1 = 入站, 2 = 出站
+                // 安全获取 Description 属性
+                try
+                {
+                    txtDescription.Text = firewallRule.Description ?? string.Empty;
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Description", ex.Message));
+                    txtDescription.Text = string.Empty;
+                }
                 
-                // 设置操作
-                int action = firewallRule.Action;
-                cmbAction.SelectedIndex = action; // 0 = 阻止, 1 = 允许
+                // 安全获取 ApplicationName 属性
+                try
+                {
+                    txtApplicationName.Text = firewallRule.ApplicationName ?? string.Empty;
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "ApplicationName", ex.Message));
+                    txtApplicationName.Text = string.Empty;
+                }
+                
+                // 安全获取 Enabled 属性
+                try
+                {
+                    chkEnabled.Checked = (bool)firewallRule.Enabled;
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Enabled", ex.Message));
+                    chkEnabled.Checked = true; // 默认启用
+                }
+                
+                // 安全获取并设置 Direction 属性
+                try
+                {
+                    int direction = (int)firewallRule.Direction;
+                    cmbDirection.SelectedIndex = direction == 1 ? 0 : 1; // 1 = 入站, 2 = 出站
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Direction", ex.Message));
+                    cmbDirection.SelectedIndex = 1; // 默认出站
+                }
+                
+                // 安全获取并设置 Action 属性
+                try
+                {
+                    int action = (int)firewallRule.Action;
+                    cmbAction.SelectedIndex = action; // 0 = 阻止, 1 = 允许
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.getRulePropertyFailed", "Action", ex.Message));
+                    cmbAction.SelectedIndex = 0; // 默认阻止
+                }
             }
             catch (Exception ex)
             {

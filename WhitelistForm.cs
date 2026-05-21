@@ -49,6 +49,12 @@ namespace FirewallManager
         /// Lock object for ensuring thread safety
         /// </summary>
         private static readonly object whitelistLock = new object();
+        
+        /// <summary>
+        /// 用于静态资源访问的锁对象
+        /// Lock object for static resource access
+        /// </summary>
+        private static readonly object staticResourceLock = new object();
 
         /// <summary>
         /// 白名单文件监控器
@@ -76,17 +82,22 @@ namespace FirewallManager
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
                 string configDir = Path.GetDirectoryName(configPath);
                 
-                if (Directory.Exists(configDir))
+                // 确保配置目录存在
+                if (!Directory.Exists(configDir))
                 {
-                    whitelistWatcher = new System.IO.FileSystemWatcher();
-                    whitelistWatcher.Path = configDir;
-                    whitelistWatcher.Filter = Config.WHITELIST_FILE;
-                    whitelistWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
-                    whitelistWatcher.Changed += WhitelistFileChanged;
-                    whitelistWatcher.EnableRaisingEvents = true;
-                    
-                    LogManager.Info(LangManager.GetText("logMessages.whitelistFileWatcherInitialized"));
+                    Directory.CreateDirectory(configDir);
+                    LogManager.Info(LangManager.GetText("logMessages.configDirCreated", configDir));
                 }
+                
+                // 初始化文件监控器
+                whitelistWatcher = new System.IO.FileSystemWatcher();
+                whitelistWatcher.Path = configDir;
+                whitelistWatcher.Filter = Config.WHITELIST_FILE;
+                whitelistWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
+                whitelistWatcher.Changed += WhitelistFileChanged;
+                whitelistWatcher.EnableRaisingEvents = true;
+                
+                LogManager.Info(LangManager.GetText("logMessages.whitelistFileWatcherInitialized"));
             }
             catch (Exception ex)
             {
@@ -102,14 +113,21 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private static async void WhitelistFileChanged(object sender, System.IO.FileSystemEventArgs e)
         {
-            // 取消之前的延迟任务
-            debounceCts?.Cancel();
-            debounceCts = new CancellationTokenSource();
+            CancellationTokenSource localCts;
+            
+            // 使用锁来安全地取消和创建新的 CancellationTokenSource
+            lock (staticResourceLock)
+            {
+                // 取消之前的延迟任务
+                debounceCts?.Cancel();
+                debounceCts = new CancellationTokenSource();
+                localCts = debounceCts;
+            }
             
             try
             {
                 // 使用异步延迟代替 Thread.Sleep，避免阻塞事件处理线程
-                await Task.Delay(200, debounceCts.Token);
+                await Task.Delay(200, localCts.Token);
                 
                 // 在后台线程中刷新缓存，避免阻塞UI线程
                 await Task.Run(() => RefreshWhitelistCache());
@@ -134,27 +152,54 @@ namespace FirewallManager
         /// </summary>
         public static void ReleaseStaticResources()
         {
-            try
+            // 使用锁来确保线程安全的资源释放
+            lock (staticResourceLock)
             {
-                // 取消防抖任务
-                debounceCts?.Cancel();
-                debounceCts?.Dispose();
-                debounceCts = null;
-                
-                // 释放文件监控器
-                if (whitelistWatcher != null)
+                try
                 {
-                    whitelistWatcher.EnableRaisingEvents = false;
-                    whitelistWatcher.Changed -= WhitelistFileChanged;
-                    whitelistWatcher.Dispose();
-                    whitelistWatcher = null;
+                    // 取消防抖任务
+                    if (debounceCts != null)
+                    {
+                        try
+                        {
+                            debounceCts.Cancel();
+                            debounceCts.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Error(LangManager.GetText("logMessages.disposeDebounceCtsFailed"), ex);
+                        }
+                        finally
+                        {
+                            debounceCts = null;
+                        }
+                    }
                     
-                    LogManager.Info(LangManager.GetText("logMessages.whitelistFileWatcherReleased"));
+                    // 释放文件监控器
+                    if (whitelistWatcher != null)
+                    {
+                        try
+                        {
+                            whitelistWatcher.EnableRaisingEvents = false;
+                            whitelistWatcher.Changed -= WhitelistFileChanged;
+                            whitelistWatcher.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Error(LangManager.GetText("logMessages.disposeWhitelistWatcherFailed"), ex);
+                        }
+                        finally
+                        {
+                            whitelistWatcher = null;
+                        }
+                        
+                        LogManager.Info(LangManager.GetText("logMessages.whitelistFileWatcherReleased"));
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                LogManager.Error(LangManager.GetText("logMessages.releaseWhitelistFileWatcherFailed"), ex);
+                catch (Exception ex)
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.releaseWhitelistFileWatcherFailed"), ex);
+                }
             }
         }
 
