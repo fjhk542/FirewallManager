@@ -13,15 +13,6 @@ namespace FirewallManager
     /// </summary>
     public class LangManager
     {
-        /// <summary>
-        /// 条件编译的调试输出方法
-        /// 仅在 DEBUG 模式下输出，Release 模式下被移除
-        /// </summary>
-        [System.Diagnostics.Conditional("DEBUG")]
-        private static void DebugLog(string message)
-        {
-            System.Diagnostics.Debug.WriteLine(message);
-        }
         // 语言文件目录和默认语言已移至 Config 类
 
         /// <summary>
@@ -67,64 +58,51 @@ namespace FirewallManager
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string languageDir = Path.Combine(baseDir, Config.LANGUAGE_DIR);
                 
-                DebugLog($"[LangManager] Base directory: {baseDir}");
-                DebugLog($"[LangManager] Language directory: {languageDir}");
-                
                 if (!Directory.Exists(languageDir))
                 {
                     string errorMsg = $"Language directory not found: {languageDir}. " +
                                      $"Base directory: {baseDir}. " +
                                      $"Expected language files: {Config.DEFAULT_LANGUAGE}.json";
-                    DebugLog($"[LangManager] ERROR: {errorMsg}");
                     LogManager.Error(errorMsg);
                     return;
                 }
-                
-                DebugLog($"[LangManager] Language directory exists");
                 
                 var files = Directory.GetFiles(languageDir, "*.json");
                 if (files.Length == 0)
                 {
                     string errorMsg = $"No language files found in directory: {languageDir}. " +
                                      $"Expected at least: {Config.DEFAULT_LANGUAGE}.json";
-                    DebugLog($"[LangManager] ERROR: {errorMsg}");
                     LogManager.Error(errorMsg);
                     return;
                 }
-                
-                DebugLog($"[LangManager] Found {files.Length} language file(s)");
                 
                 int successCount = 0;
                 int failCount = 0;
                 
                 foreach (var file in files)
-                {
-                    DebugLog($"[LangManager] Processing file: {file}");
-                    try
                     {
-                        string fileName = Path.GetFileNameWithoutExtension(file);
-                        string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
-                        DebugLog($"[LangManager] Extracted language code: {languageCode}");
-                        
-                        if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
+                        try
                         {
-                            string errorMsg = $"Invalid language code format: {languageCode} from file: {file}. Expected 2-letter code (e.g., 'en', 'zh')";
-                            DebugLog($"[LangManager] ERROR: {errorMsg}");
-                            LogManager.Warning(errorMsg);
-                            failCount++;
-                            continue;
-                        }
-                        
-                        string jsonContent = File.ReadAllText(file, System.Text.Encoding.UTF8);
-                        
-                        if (string.IsNullOrWhiteSpace(jsonContent))
-                        {
-                            string errorMsg = $"Language file is empty: {file}";
-                            DebugLog($"[LangManager] ERROR: {errorMsg}");
-                            LogManager.Warning(errorMsg);
-                            failCount++;
-                            continue;
-                        }
+                            string fileName = Path.GetFileNameWithoutExtension(file);
+                            string languageCode = fileName.Contains('-') ? fileName.Split('-')[0].ToLower() : fileName.ToLower();
+                            
+                            if (!System.Text.RegularExpressions.Regex.IsMatch(languageCode, "^[a-z]{2}$"))
+                            {
+                                string errorMsg = $"Invalid language code format: {languageCode} from file: {file}. Expected 2-letter code (e.g., 'en', 'zh')";
+                                LogManager.Warning(errorMsg);
+                                failCount++;
+                                continue;
+                            }
+                            
+                            string jsonContent = File.ReadAllText(file, System.Text.Encoding.UTF8);
+                            
+                            if (string.IsNullOrWhiteSpace(jsonContent))
+                            {
+                                string errorMsg = $"Language file is empty: {file}";
+                                LogManager.Warning(errorMsg);
+                                failCount++;
+                                continue;
+                            }
                         
                         var jsonDoc = JsonDocument.Parse(jsonContent);
                         var translations = new Dictionary<string, string>();
@@ -134,7 +112,6 @@ namespace FirewallManager
                         if (translations.Count == 0)
                         {
                             string errorMsg = $"No translations found in language file: {file}";
-                            DebugLog($"[LangManager] WARNING: {errorMsg}");
                             LogManager.Warning(errorMsg);
                             failCount++;
                             continue;
@@ -148,27 +125,23 @@ namespace FirewallManager
                                 languageResources.Add(languageCode, translations);
                         }
                         
-                        DebugLog($"[LangManager] Successfully loaded language: {languageCode} with {translations.Count} translations");
                         successCount++;
                     }
                     catch (JsonException ex)
                     {
                         string errorMsg = $"Failed to parse JSON in language file: {file}. Error: {ex.Message}";
-                        DebugLog($"[LangManager] ERROR: {errorMsg}");
                         LogManager.Error(errorMsg, ex);
                         failCount++;
                     }
                     catch (Exception ex)
                     {
                         string errorMsg = $"Failed to load language file: {file}. Error: {ex.Message}";
-                        DebugLog($"[LangManager] ERROR: {errorMsg}");
                         LogManager.Error(errorMsg, ex);
                         failCount++;
                     }
                 }
                 
                 string summaryMsg = $"Language files loading completed. Success: {successCount}, Failed: {failCount}";
-                DebugLog($"[LangManager] {summaryMsg}");
                 
                 if (successCount == 0)
                 {
@@ -187,7 +160,6 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 string errorMsg = $"Failed to initialize language manager: {ex.Message}";
-                DebugLog($"[LangManager] FATAL ERROR: {errorMsg}");
                 LogManager.Error(errorMsg, ex);
             }
         }
@@ -258,7 +230,6 @@ namespace FirewallManager
                     currentLanguage = Config.DEFAULT_LANGUAGE;
                 }
             }
-            // 语言切换时清空缓存，确保获取最新翻译
             // 语言切换时清空缓存，确保获取最新翻译
             translationCache.Clear();
         }
@@ -372,15 +343,13 @@ namespace FirewallManager
                     }
                     else
                     {
-                        DebugLog(LangManager.GetText("logMessages.langManager.paramMismatch", key));
                         return text;
                     }
                 }
                 return text;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                DebugLog(LangManager.GetText("logMessages.langManager.getTranslationFailed", ex.Message));
                 return key;
             }
         }
@@ -433,6 +402,7 @@ namespace FirewallManager
             { "logMessages.clearLogFailed", "Failed to clear logs: {0}" },
             { "logMessages.clearLogEmptyFailed", "Failed to clear log file: {0}" },
             { "logMessages.whitelistCacheRefreshed", "Whitelist cache refreshed: {0} entries" },
+            { "logMessages.whitelistInvalidPath", "Invalid whitelist path: {0}" },
             { "logMessages.whitelistCacheRefreshedManual", "Whitelist cache manually refreshed: {0} entries" },
             { "logMessages.refreshWhitelistCacheFailed", "Failed to refresh whitelist cache" },
             { "logMessages.whitelistFileChangedCacheRefreshed", "Whitelist file changed, cache refreshed" },

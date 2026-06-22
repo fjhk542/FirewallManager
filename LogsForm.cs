@@ -207,12 +207,32 @@ namespace FirewallManager
                 if (saveFileDialog.ShowDialog() == DialogResult.OK)
                 {
                     string exportPath = saveFileDialog.FileName;
-                    File.WriteAllText(exportPath, logsTextBox.Text, Encoding.UTF8);
+                    
+                    // 验证导出路径安全性，防止路径遍历攻击
+                    string normalizedExportPath = Path.GetFullPath(exportPath);
+                    
+                    // 检查导出路径是否包含 UNC 路径或设备路径等特殊前缀
+                    if (normalizedExportPath.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.exportPathUncNotAllowed"));
+                        MessageBox.Show(LangManager.GetText("messages.exportPathInvalid"), LangManager.GetText("messages.exportPathInvalidTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    
+                    // 验证目标目录是否存在
+                    string exportDir = Path.GetDirectoryName(normalizedExportPath);
+                    if (!string.IsNullOrEmpty(exportDir) && !Directory.Exists(exportDir))
+                    {
+                        Directory.CreateDirectory(exportDir);
+                    }
+                    
+                    File.WriteAllText(normalizedExportPath, logsTextBox.Text, Encoding.UTF8);
                     MessageBox.Show(LangManager.GetText("messages.exportSuccess"), LangManager.GetText("messages.exportSuccessTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                LogManager.Error(LangManager.GetText("logMessages.exportLogFailed", ex.Message));
                 MessageBox.Show(LangManager.GetText("messages.exportFailed"), LangManager.GetText("messages.exportFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }

@@ -6,27 +6,17 @@ using System.Text;
 using System.Threading.Tasks;
 
 namespace FirewallManager
-{
-    /// <summary>
-    /// 日志管理器类
-    /// 用于记录和读取操作日志
-    /// </summary>
-    public static class LogManager
     {
         /// <summary>
-        /// 条件编译的调试输出方法
-        /// 仅在 DEBUG 模式下输出，Release 模式下被移除
+        /// 日志管理器类
+        /// 用于记录和读取操作日志
         /// </summary>
-        [System.Diagnostics.Conditional("DEBUG")]
-        private static void DebugLog(string message)
+        public static class LogManager
         {
-            System.Diagnostics.Debug.WriteLine(message);
-        }
-
-        /// <summary>
-        /// 日志文件路径
-        /// </summary>
-        private static readonly string _logFilePath;
+            /// <summary>
+            /// 日志文件路径
+            /// </summary>
+            private static readonly string _logFilePath;
         
         /// <summary>
         /// 获取日志文件路径
@@ -135,8 +125,9 @@ namespace FirewallManager
                 // 再次规范化最终路径
                 _logFilePath = Path.GetFullPath(_logFilePath);
                 
-                // 确保路径仍然在LocalApplicationData目录内
-                if (!_logFilePath.StartsWith(appDataPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                // 确保路径仍然在应用程序目录内
+                string expectedPrefix = appFolderPath + Path.DirectorySeparatorChar;
+                if (!_logFilePath.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(LangManager.GetText("logMessages.logPathOutsideSafeRange"));
                 }
@@ -255,11 +246,8 @@ namespace FirewallManager
                 // 触发日志更新事件
                 OnLogUpdated?.Invoke(logMessage);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // 日志写入失败，记录到调试输出以便排查问题
-                DebugLog(LangManager.GetText("logMessages.logWriteFailed", ex.Message));
-                DebugLog(LangManager.GetText("logMessages.stackTrace", ex.StackTrace));
             }
         }
         
@@ -338,19 +326,12 @@ namespace FirewallManager
             filtered = filtered.Replace("\r", " [CR] ");
             filtered = filtered.Replace("\n", " [LF] ");
             
-            if (filtered.Length > 8000)
-            {
-                filtered = filtered.Substring(0, 8000) + "... [" + LangManager.GetText("logMessages.logManager.messageTruncated2") + "]";
-            }
-            
             return filtered;
         }
 
         /// <summary>
         /// 记录调试日志
         /// </summary>
-        /// <param name="message">日志消息</param>
-        /// <param name="message">Log message</param>
         public static void Debug(string message)
         {
             Log(LogLevel.Debug, message);
@@ -359,8 +340,6 @@ namespace FirewallManager
         /// <summary>
         /// 记录信息日志
         /// </summary>
-        /// <param name="message">日志消息</param>
-        /// <param name="message">Log message</param>
         public static void Info(string message)
         {
             Log(LogLevel.Info, message);
@@ -369,8 +348,6 @@ namespace FirewallManager
         /// <summary>
         /// 记录警告日志
         /// </summary>
-        /// <param name="message">日志消息</param>
-        /// <param name="message">Log message</param>
         public static void Warning(string message)
         {
             Log(LogLevel.Warning, message);
@@ -379,10 +356,7 @@ namespace FirewallManager
         /// <summary>
         /// 记录错误日志
         /// </summary>
-        /// <param name="message">日志消息</param>
-        /// <param name="message">Log message</param>
         /// <param name="exception">异常对象</param>
-        /// <param name="exception">Exception object</param>
         public static void Error(string message, Exception exception = null)
         {
             Log(LogLevel.Error, message, exception);
@@ -431,10 +405,8 @@ namespace FirewallManager
                     logs.AddRange(logLines);
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // 读取日志失败，记录到调试输出
-                DebugLog(LangManager.GetText("logMessages.readLogFailed", ex.Message));
             }
             
             return logs;
@@ -487,10 +459,8 @@ namespace FirewallManager
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // 清理日志失败，记录到调试输出
-                DebugLog(LangManager.GetText("logMessages.clearLogFailed", ex.Message));
             }
         }
 
@@ -506,38 +476,17 @@ namespace FirewallManager
                     File.WriteAllText(_logFilePath, string.Empty, Encoding.UTF8);
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // 清理日志文件失败，记录到调试输出
-                DebugLog(LangManager.GetText("logMessages.clearLogEmptyFailed", ex.Message));
             }
         }
         
         /// <summary>
         /// 检测路径是否为符号链接
         /// </summary>
-        /// <param name="path">要检测的路径</param>
-        /// <returns>是否为符号链接</returns>
         private static bool IsSymbolicLink(string path)
         {
-            try
-            {
-                if (Directory.Exists(path))
-                {
-                    var dirInfo = new DirectoryInfo(path);
-                    return dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
-                }
-                else if (File.Exists(path))
-                {
-                    var fileInfo = new FileInfo(path);
-                    return fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
-                }
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
+            return ComHelper.IsSymbolicLink(path);
         }
     }
 }

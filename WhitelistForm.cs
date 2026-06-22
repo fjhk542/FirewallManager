@@ -105,9 +105,9 @@ namespace FirewallManager
                 
                 LogManager.Info(LangManager.GetText("logMessages.whitelistFileWatcherInitialized"));
             }
-            catch (Exception ex)
+            catch
             {
-                LogManager.Error(LangManager.GetText("logMessages.initializeWhitelistFileWatcherFailed"), ex);
+                LogManager.Error(LangManager.GetText("logMessages.initializeWhitelistFileWatcherFailed"));
             }
         }
 
@@ -318,7 +318,7 @@ namespace FirewallManager
                 if (File.Exists(configPath))
                 {
                     string json = File.ReadAllText(configPath, Encoding.UTF8);
-                    whitelist = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+                    whitelist = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions) ?? new List<string>();
                     
                     foreach (var item in whitelist)
                     {
@@ -361,7 +361,10 @@ namespace FirewallManager
                 }
                 
                 string json = JsonSerializer.Serialize(whitelist, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(configPath, json, Encoding.UTF8);
+                ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
+                
+                // 保存后更新完整性校验值
+                Config.SaveConfigIntegrityHash(configPath);
                 
                 LogManager.Info(LangManager.GetText("logMessages.saveWhitelistItems", whitelist.Count));
                 MessageBox.Show(LangManager.GetText("messages.whitelistSaved"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -378,13 +381,9 @@ namespace FirewallManager
 
         /// <summary>
         /// 添加按钮点击事件
-        /// Add button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
         private void btnAdd_Click(object sender, EventArgs e)
         {
-            // 打开文件选择对话框
             using (var openFileDialog = new OpenFileDialog())
             {
                 openFileDialog.Filter = LangManager.GetText("messages.exeFileFilter");
@@ -392,10 +391,23 @@ namespace FirewallManager
                 if (openFileDialog.ShowDialog() == DialogResult.OK)
                 {
                     string selectedPath = openFileDialog.FileName;
-                    if (!whitelistListBox.Items.Contains(selectedPath))
+                    try
                     {
-                        whitelistListBox.Items.Add(selectedPath);
-                        LogManager.Info(LangManager.GetText("logMessages.addToWhitelist", selectedPath));
+                        string normalizedPath = Path.GetFullPath(selectedPath);
+                        if (ComHelper.IsSymbolicLink(normalizedPath))
+                        {
+                            LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLink", normalizedPath));
+                            return;
+                        }
+                        if (!whitelistListBox.Items.Contains(normalizedPath))
+                        {
+                            whitelistListBox.Items.Add(normalizedPath);
+                            LogManager.Info(LangManager.GetText("logMessages.addToWhitelist", normalizedPath));
+                        }
+                    }
+                    catch
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.whitelistInvalidPath", selectedPath));
                     }
                 }
             }
@@ -527,23 +539,61 @@ namespace FirewallManager
                     return;
                 }
 
+                // 验证配置文件完整性，防止被篡改
+                if (!Config.VerifyConfigIntegrity(configPath))
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"));
+                    return;
+                }
+
                 string json = File.ReadAllText(configPath, Encoding.UTF8);
-                var paths = JsonSerializer.Deserialize<List<string>>(json);
+                
+                // 验证 JSON 内容大小，防止恶意大文件导致内存耗尽
+                if (json.Length > 10 * 1024 * 1024)
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.whitelistFileTooLarge"));
+                    return;
+                }
+                
+                var paths = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions);
 
                 var newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (paths != null)
                 {
+                    // 验证条目数量，防止恶意大量条目导致 DoS
+                    if (paths.Count > 100000)
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.whitelistTooManyEntries", paths.Count));
+                        return;
+                    }
+                    
                     foreach (var path in paths)
                     {
                         if (string.IsNullOrEmpty(path)) continue;
                         try
                         {
                             string normalized = Path.GetFullPath(path);
+                            
+                            // 拒绝扩展长度路径前缀，防止路径绕过攻击
+                            if (normalized.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectExtendedPath", normalized));
+                                continue;
+                            }
+                            
+                            // 拒绝 UNC 路径，防止网络共享路径注入
+                            if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectUncPath", normalized));
+                                continue;
+                            }
+                            
                             newCache.Add(normalized);
                         }
                         catch
                         {
-                            newCache.Add(path);
+                            // 无法规范化的路径不加入缓存
+                            LogManager.Warning(LangManager.GetText("logMessages.whitelistInvalidPath", path));
                         }
                     }
                 }

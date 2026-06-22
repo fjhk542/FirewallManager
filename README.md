@@ -265,6 +265,17 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
 
 ## 开发说明
 
+### 安全文档
+
+项目包含完整的安全文档体系，存放于 `docs/` 目录：
+
+| 文档 | 描述 |
+|------|-------------------|
+| [SECURITY_REPORT.md](SECURITY_REPORT.md) | 安全漏洞修复报告，包含 13 个已修复漏洞的详细信息 |
+| [docs/SECURITY_CODING_STANDARDS.md](docs/SECURITY_CODING_STANDARDS.md) | 安全编码规范，涵盖输入验证、输出编码、COM安全等 10 个方面 |
+| [docs/VULNERABILITY_RESPONSE.md](docs/VULNERABILITY_RESPONSE.md) | 漏洞响应流程，定义从发现到修复的完整生命周期 |
+| [docs/SECURITY_TESTING_GUIDE.md](docs/SECURITY_TESTING_GUIDE.md) | 安全测试指南，包含测试方法、用例规范和回归流程 |
+
 ### 开发环境
 
 - Visual Studio 2022
@@ -318,6 +329,18 @@ dotnet test
 - 日志记录功能可以帮助调试问题
 
 ## 版本历史
+
+### v1.6.0
+
+- **安全加固**: 全面安全漏洞风险评估与修复，修复 13 个安全漏洞（4 高危、4 中危、5 低危）
+- **路径安全**: 添加路径规范化验证，拒绝特殊路径前缀和符号链接
+- **TOCTOU防护**: 添加文件写入等待机制，防止竞态条件攻击
+- **日志安全**: 添加控制字符过滤、敏感信息脱敏、频率限制
+- **COM安全**: 添加 COM 对象安全访问方法，防止异常崩溃
+- **配置文件安全**: 添加 HMAC-SHA256 完整性校验保护
+- **新增安全文档**: 安全漏洞修复报告、安全编码规范、漏洞响应流程、安全测试指南
+- **安全回归测试**: 所有 76 项安全测试用例全部通过
+- **更新项目版本号到 1.6.0**
 
 ### v1.5.0
 

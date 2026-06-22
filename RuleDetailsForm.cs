@@ -3,67 +3,10 @@ using System.Windows.Forms;
 
 namespace FirewallManager
 {
-    /// <summary>
-    /// 规则详情窗体
-    /// 用于显示和管理单个防火墙规则的详细信息
-    /// </summary>
     public partial class RuleDetailsForm : Form
     {
         private dynamic firewallRule;
         private string ruleName;
-
-        /// <summary>
-        /// 安全地从动态 COM 对象获取属性值
-        /// </summary>
-        /// <typeparam name="T">返回类型</typeparam>
-        /// <param name="obj">动态对象</param>
-        /// <param name="propertyName">属性名</param>
-        /// <param name="defaultValue">默认值</param>
-        /// <returns>属性值或默认值</returns>
-        private static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
-        {
-            try
-            {
-                if (obj == null)
-                {
-                    return defaultValue;
-                }
-                object value = obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.GetProperty, null, obj, null);
-                if (value == null)
-                {
-                    return defaultValue;
-                }
-                return (T)Convert.ChangeType(value, typeof(T));
-            }
-            catch
-            {
-                return defaultValue;
-            }
-        }
-
-        /// <summary>
-        /// 安全地设置动态 COM 对象的属性值
-        /// </summary>
-        /// <param name="obj">动态对象</param>
-        /// <param name="propertyName">属性名</param>
-        /// <param name="value">属性值</param>
-        /// <returns>是否设置成功</returns>
-        private static bool SafeSetProperty(dynamic obj, string propertyName, object value)
-        {
-            try
-            {
-                if (obj == null)
-                {
-                    return false;
-                }
-                obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
         
         /// <summary>
         /// 构造函数
@@ -125,16 +68,14 @@ namespace FirewallManager
             {
                 // 安全访问 dynamic 对象的属性
                 txtRuleName.Text = ruleName ?? string.Empty;
-                txtDescription.Text = SafeGetProperty<string>(firewallRule, "Description", string.Empty);
-                txtApplicationName.Text = SafeGetProperty<string>(firewallRule, "ApplicationName", string.Empty);
-                chkEnabled.Checked = SafeGetProperty<bool>(firewallRule, "Enabled", true);
+                txtDescription.Text = ComHelper.SafeGetProperty<string>(firewallRule, "Description", string.Empty);
+                txtApplicationName.Text = ComHelper.SafeGetProperty<string>(firewallRule, "ApplicationName", string.Empty);
+                chkEnabled.Checked = ComHelper.SafeGetProperty<bool>(firewallRule, "Enabled", true);
 
-                // 安全获取并设置 Direction 属性
-                int direction = SafeGetProperty<int>(firewallRule, "Direction", 2);
+                int direction = ComHelper.SafeGetProperty<int>(firewallRule, "Direction", 2);
                 cmbDirection.SelectedIndex = direction == 1 ? 0 : 1;
 
-                // 安全获取并设置 Action 属性
-                int action = SafeGetProperty<int>(firewallRule, "Action", 0);
+                int action = ComHelper.SafeGetProperty<int>(firewallRule, "Action", 0);
                 cmbAction.SelectedIndex = action;
             }
             catch (Exception ex)
@@ -153,11 +94,11 @@ namespace FirewallManager
         {
             try
             {
-                SafeSetProperty(firewallRule, "Name", txtRuleName.Text);
-                SafeSetProperty(firewallRule, "Description", txtDescription.Text);
-                SafeSetProperty(firewallRule, "Enabled", chkEnabled.Checked);
-                SafeSetProperty(firewallRule, "Direction", cmbDirection.SelectedIndex == 0 ? 1 : 2);
-                SafeSetProperty(firewallRule, "Action", cmbAction.SelectedIndex);
+                ComHelper.SafeSetProperty(firewallRule, "Name", txtRuleName.Text);
+                ComHelper.SafeSetProperty(firewallRule, "Description", txtDescription.Text);
+                ComHelper.SafeSetProperty(firewallRule, "Enabled", chkEnabled.Checked);
+                ComHelper.SafeSetProperty(firewallRule, "Direction", cmbDirection.SelectedIndex == 0 ? 1 : 2);
+                ComHelper.SafeSetProperty(firewallRule, "Action", cmbAction.SelectedIndex);
 
                 LogManager.Info(LangManager.GetText("logMessages.updateRule", txtRuleName.Text));
                 MessageBox.Show(LangManager.GetText("messages.ruleUpdated"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);

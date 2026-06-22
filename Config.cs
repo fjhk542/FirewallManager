@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text;
+using System.Security.Cryptography;
 
 namespace FirewallManager
 {
@@ -65,31 +68,26 @@ namespace FirewallManager
         public const string LOG_FILE_NAME = "firewall_manager.log";
 
         /// <summary>
-        /// 关键程序列表
+        /// 完整性校验文件扩展名
+        /// </summary>
+        private const string INTEGRITY_FILE_EXT = ".hmac";
+
+        /// <summary>
+        /// 用于派生 HMAC 密钥的固定标记
+        /// </summary>
+        private const string HMAC_KEY_TAG = "FirewallManager_Config_Integrity_v1";
+
+        /// <summary>
+        /// 关键程序集合（HashSet实现O(1)查找）
         /// 这些程序不应被阻止，否则可能导致系统不稳定
         /// </summary>
-        public static readonly string[] CRITICAL_PROGRAMS = new[]
+        public static readonly HashSet<string> CRITICAL_PROGRAMS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "explorer.exe",
-            "svchost.exe",
-            "lsass.exe",
-            "csrss.exe",
-            "wininit.exe",
-            "services.exe",
-            "spoolsv.exe",
-            "winlogon.exe",
-            "msdtc.exe",
-            "smss.exe",
-            "system.exe",
-            "idle.exe",
-            "conhost.exe",
-            "taskhostw.exe",
-            "dwm.exe",
-            "winmgmt.exe",
-            "ntoskrnl.exe",
-            "userinit.exe",
-            "runtimebroker.exe",
-            "taskmgr.exe"
+            "explorer.exe", "svchost.exe", "lsass.exe", "csrss.exe",
+            "wininit.exe", "services.exe", "spoolsv.exe", "winlogon.exe",
+            "msdtc.exe", "smss.exe", "system.exe", "idle.exe",
+            "conhost.exe", "taskhostw.exe", "dwm.exe", "winmgmt.exe",
+            "ntoskrnl.exe", "userinit.exe", "runtimebroker.exe", "taskmgr.exe"
         };
 
         /// <summary>
@@ -108,6 +106,156 @@ namespace FirewallManager
             Directory.CreateDirectory(appFolderPath);
             
             return Path.Combine(appFolderPath, fileName);
+        }
+
+        /// <summary>
+        /// 生成机器特定的 HMAC 密钥
+        /// 使用 MachineGuid 作为密钥基础，确保密钥在不同机器上不同
+        /// </summary>
+        /// <returns>HMAC 密钥字节数组</returns>
+        private static byte[] GenerateHmacKey()
+        {
+            try
+            {
+                string machineKey = HMAC_KEY_TAG;
+                try
+                {
+                    string machineGuid = Microsoft.Win32.Registry.GetValue(
+                        @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography", "MachineGuid", null) as string;
+                    if (!string.IsNullOrEmpty(machineGuid))
+                    {
+                        machineKey = machineGuid + HMAC_KEY_TAG;
+                    }
+                }
+                catch
+                {
+                    // 无法读取 MachineGuid 时使用默认标记
+                }
+
+                using (var sha256 = SHA256.Create())
+                {
+                    return sha256.ComputeHash(Encoding.UTF8.GetBytes(machineKey));
+                }
+            }
+            catch
+            {
+                // 密钥生成失败时使用回退密钥
+                using (var sha256 = SHA256.Create())
+                {
+                    return sha256.ComputeHash(Encoding.UTF8.GetBytes(HMAC_KEY_TAG));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 计算文件的 HMAC-SHA256 完整性校验值
+        /// </summary>
+        /// <param name="filePath">文件路径</param>
+        /// <returns>完整性校验值的十六进制字符串，失败返回 null</returns>
+        private static string ComputeFileIntegrityHash(string filePath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                {
+                    return null;
+                }
+
+                byte[] key = GenerateHmacKey();
+                using (var hmac = new HMACSHA256(key))
+                {
+                    byte[] fileBytes = File.ReadAllBytes(filePath);
+                    byte[] hashBytes = hmac.ComputeHash(fileBytes);
+                    StringBuilder sb = new StringBuilder(hashBytes.Length * 2);
+                    foreach (byte b in hashBytes)
+                    {
+                        sb.Append(b.ToString("x2"));
+                    }
+                    return sb.ToString();
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 获取与配置文件关联的完整性校验文件路径
+        /// </summary>
+        /// <param name="configFilePath">配置文件路径</param>
+        /// <returns>完整性校验文件路径</returns>
+        private static string GetIntegrityFilePath(string configFilePath)
+        {
+            return configFilePath + INTEGRITY_FILE_EXT;
+        }
+
+        /// <summary>
+        /// 保存配置文件的完整性校验值
+        /// </summary>
+        /// <param name="configFilePath">配置文件路径</param>
+        /// <returns>是否保存成功</returns>
+        public static bool SaveConfigIntegrityHash(string configFilePath)
+        {
+            try
+            {
+                string hash = ComputeFileIntegrityHash(configFilePath);
+                if (hash == null)
+                {
+                    return false;
+                }
+
+                string integrityFilePath = GetIntegrityFilePath(configFilePath);
+                ComHelper.AtomicWriteAllText(integrityFilePath, hash, Encoding.UTF8);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 验证配置文件的完整性
+        /// 通过比对文件内容的 HMAC-SHA256 校验值与之前保存的校验值来确认文件未被篡改
+        /// </summary>
+        /// <param name="configFilePath">配置文件路径</param>
+        /// <returns>
+        /// true: 完整性验证通过或无法验证（无校验文件时视为通过）
+        /// false: 完整性验证失败
+        /// </returns>
+        public static bool VerifyConfigIntegrity(string configFilePath)
+        {
+            try
+            {
+                string integrityFilePath = GetIntegrityFilePath(configFilePath);
+
+                // 如果校验文件不存在，视为首次运行或升级场景，创建校验文件后返回通过
+                if (!File.Exists(integrityFilePath))
+                {
+                    SaveConfigIntegrityHash(configFilePath);
+                    return true;
+                }
+
+                string savedHash = File.ReadAllText(integrityFilePath, Encoding.UTF8)?.Trim();
+                if (string.IsNullOrEmpty(savedHash))
+                {
+                    return false;
+                }
+
+                string computedHash = ComputeFileIntegrityHash(configFilePath);
+                if (computedHash == null)
+                {
+                    return false;
+                }
+
+                return string.Equals(savedHash, computedHash, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                // 验证失败时出于安全考虑返回 false
+                return false;
+            }
         }
     }
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -40,80 +39,20 @@ namespace FirewallManager
             addedRulesLock = new object();
         }
 
-        /// <summary>
-        /// 安全地从动态 COM 对象获取属性值
-        /// </summary>
-        /// <typeparam name="T">返回类型</typeparam>
-        /// <param name="obj">动态对象</param>
-        /// <param name="propertyName">属性名</param>
-        /// <param name="defaultValue">默认值</param>
-        /// <returns>属性值或默认值</returns>
-        private static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
-        {
-            try
-            {
-                if (obj == null)
-                {
-                    return defaultValue;
-                }
-                object value = obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.GetProperty, null, obj, null);
-                if (value == null)
-                {
-                    return defaultValue;
-                }
-                return (T)Convert.ChangeType(value, typeof(T));
-            }
-            catch
-            {
-                return defaultValue;
-            }
-        }
-
-        /// <summary>
-        /// 安全地设置动态 COM 对象的属性值
-        /// </summary>
-        /// <param name="obj">动态对象</param>
-        /// <param name="propertyName">属性名</param>
-        /// <param name="value">属性值</param>
-        /// <returns>是否设置成功</returns>
         private static bool SafeSetProperty(dynamic obj, string propertyName, object value)
         {
-            try
-            {
-                if (obj == null)
-                {
-                    return false;
-                }
-                obj.GetType().InvokeMember(propertyName, System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
+            return ComHelper.SafeSetProperty(obj, propertyName, value);
         }
 
-        /// <summary>
-        /// 验证 COM 对象类型是否匹配预期 ProgID
-        /// </summary>
-        /// <param name="obj">COM 对象</param>
-        /// <param name="expectedProgId">预期 ProgID</param>
-        /// <returns>是否匹配</returns>
-        private static bool ValidateComObjectType(dynamic obj, string expectedProgId)
+        private static void ReleaseComObject(dynamic obj)
         {
-            try
+            if (obj != null)
             {
-                if (obj == null)
+                try
                 {
-                    return false;
+                    Marshal.ReleaseComObject(obj);
                 }
-                // 通过检查对象的类型名称来验证 COM 对象是否有效
-                string typeName = obj.GetType().Name;
-                return !string.IsNullOrEmpty(typeName);
-            }
-            catch
-            {
-                return false;
+                catch { }
             }
         }
 
@@ -336,10 +275,7 @@ namespace FirewallManager
 
         /// <summary>
         /// 清理规则名称中的不安全字符
-        /// 将规则名称中的特殊字符替换为下划线，确保规则名称符合防火墙要求
         /// </summary>
-        /// <param name="input">输入字符串</param>
-        /// <returns>清理后的安全字符串</returns>
         public string SanitizeRuleName(string input)
         {
             if (string.IsNullOrEmpty(input))
@@ -347,13 +283,27 @@ namespace FirewallManager
                 return input;
             }
 
-            // 移除或替换规则名称中可能的不安全字符
-            char[] unsafeChars = new char[] { '"', '\'', '\\', '/', ':', '*', '?', '<', '>', '|' };
-            string sanitized = input;
-
-            foreach (char c in unsafeChars)
+            // 过滤控制字符（0x00-0x1F, 0x7F），防止规则名称注入
+            char[] buffer = new char[input.Length];
+            int pos = 0;
+            foreach (char c in input)
             {
-                sanitized = sanitized.Replace(c, '_');
+                if (c >= 32 && c != 127 && c != '"' && c != '\'' && c != '\\' && c != '/' && c != ':' && c != '*' && c != '?' && c != '<' && c != '>' && c != '|')
+                {
+                    buffer[pos++] = c;
+                }
+                else if (pos > 0 && buffer[pos - 1] != '_')
+                {
+                    buffer[pos++] = '_';
+                }
+            }
+            string sanitized = new string(buffer, 0, pos);
+
+            // 限制规则名称长度（防火墙规则名称通常限制在 64-128 字符）
+            const int maxRuleNameLength = 60;
+            if (sanitized.Length > maxRuleNameLength)
+            {
+                sanitized = sanitized.Substring(0, maxRuleNameLength);
             }
 
             return sanitized;
@@ -369,13 +319,6 @@ namespace FirewallManager
         {
             try
             {
-                // 验证调用者身份，防止被恶意进程注入调用
-                if (!IsCallerProcessValid())
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", exePath));
-                    return false;
-                }
-
                 // 检查防火墙策略是否已初始化
                 if (firewallPolicy == null)
                 {
@@ -392,7 +335,7 @@ namespace FirewallManager
 
                 // 检查是否为系统关键程序
                 string fullFileName = System.IO.Path.GetFileName(exePath);
-                if (Config.CRITICAL_PROGRAMS.Any(c => fullFileName.Equals(c, StringComparison.OrdinalIgnoreCase)))
+                if (Config.CRITICAL_PROGRAMS.Contains(fullFileName))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.skipCriticalProgram", exePath));
                     return false;
@@ -422,27 +365,34 @@ namespace FirewallManager
                         return false;
                     }
 
-                    SafeSetProperty(newRule, "Name", ruleName);
-                    SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescriptionAuto") + ": " + exePath);
-                    SafeSetProperty(newRule, "ApplicationName", exePath);
-                    SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
-                    SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
-                    SafeSetProperty(newRule, "Enabled", true);
-                    SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
-
-                    firewallPolicy.Rules.Add(newRule);
-
-                    // 添加到本地列表
-                    lock (addedRulesLock)
+                    try
                     {
-                        if (!addedRules.Contains(ruleName))
-                        {
-                            addedRules.Add(ruleName);
-                        }
-                    }
+                        SafeSetProperty(newRule, "Name", ruleName);
+                        SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescriptionAuto") + ": " + exePath);
+                        SafeSetProperty(newRule, "ApplicationName", exePath);
+                        SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
+                        SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
+                        SafeSetProperty(newRule, "Enabled", true);
+                        SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
 
-                    LogManager.Info(LangManager.GetText("logMessages.autoCreateFirewallRule", ruleName, exePath));
-                    return true;
+                        firewallPolicy.Rules.Add(newRule);
+
+                        // 添加到本地列表
+                        lock (addedRulesLock)
+                        {
+                            if (!addedRules.Contains(ruleName))
+                            {
+                                addedRules.Add(ruleName);
+                            }
+                        }
+
+                        LogManager.Info(LangManager.GetText("logMessages.autoCreateFirewallRule", ruleName, exePath));
+                        return true;
+                    }
+                    finally
+                    {
+                        ReleaseComObject(newRule);
+                    }
                 }
                 return false;
             }
@@ -715,7 +665,7 @@ namespace FirewallManager
 
                         // 检查是否为系统关键程序
                         string fullFileName = System.IO.Path.GetFileName(exeFile);
-                        if (Config.CRITICAL_PROGRAMS.Any(c => fullFileName.Equals(c, StringComparison.OrdinalIgnoreCase)))
+                        if (Config.CRITICAL_PROGRAMS.Contains(fullFileName))
                         {
                             LogManager.Warning(LangManager.GetText("logMessages.skipCriticalProgram", exeFile));
                             skippedCount++;
@@ -742,24 +692,31 @@ namespace FirewallManager
                                 continue;
                             }
 
-                            SafeSetProperty(newRule, "Name", ruleName);
-                            SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescription") + ": " + exeFile);
-                            SafeSetProperty(newRule, "ApplicationName", exeFile);
-                            SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
-                            SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
-                            SafeSetProperty(newRule, "Enabled", true);
-                            SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
-
-                            firewallPolicy.Rules.Add(newRule);
-
-                            // 添加到本地列表
-                            lock (addedRulesLock)
+                            try
                             {
-                                addedRules.Add(ruleName);
-                            }
+                                SafeSetProperty(newRule, "Name", ruleName);
+                                SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescription") + ": " + exeFile);
+                                SafeSetProperty(newRule, "ApplicationName", exeFile);
+                                SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
+                                SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
+                                SafeSetProperty(newRule, "Enabled", true);
+                                SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
 
-                            addedCount++;
-                            LogManager.Info(LangManager.GetText("logMessages.createFirewallRule", ruleName, exeFile));
+                                firewallPolicy.Rules.Add(newRule);
+
+                                // 添加到本地列表
+                                lock (addedRulesLock)
+                                {
+                                    addedRules.Add(ruleName);
+                                }
+
+                                addedCount++;
+                                LogManager.Info(LangManager.GetText("logMessages.createFirewallRule", ruleName, exeFile));
+                            }
+                            finally
+                            {
+                                ReleaseComObject(newRule);
+                            }
                         }
                         else
                         {
@@ -886,47 +843,5 @@ namespace FirewallManager
             }
         }
 
-        /// <summary>
-        /// 验证调用进程是否合法
-        /// 通过检查当前进程的文件路径和模块信息来防止恶意进程注入调用
-        /// </summary>
-        /// <returns>调用者是否合法</returns>
-        private static bool IsCallerProcessValid()
-        {
-            try
-            {
-                using (Process currentProcess = Process.GetCurrentProcess())
-                {
-                    string mainModulePath = currentProcess.MainModule?.FileName;
-                    if (string.IsNullOrEmpty(mainModulePath))
-                    {
-                        return false;
-                    }
-
-                    string mainModuleFileName = Path.GetFileName(mainModulePath);
-                    string processFileName = Path.GetFileName(currentProcess.ProcessName);
-
-                    // 验证主模块文件名与进程名一致（防止 DLL 注入后的伪造调用）
-                    if (!mainModuleFileName.StartsWith(processFileName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return false;
-                    }
-
-                    // 验证主模块位于应用程序目录下
-                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    string moduleDir = Path.GetDirectoryName(mainModulePath);
-                    if (moduleDir == null || !moduleDir.StartsWith(appDir, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return false;
-                    }
-
-                    return true;
-                }
-            }
-            catch
-            {
-                return false;
-            }
-        }
     }
 }

@@ -282,38 +282,9 @@ namespace FirewallManager
             }
         }
 
-        /// <summary>
-        /// 检测路径是否为符号链接
-        /// 使用 FileSystemInfo.LinkTarget 属性（.NET 5+）来精确检测真正的符号链接
-        /// 避免将挂载点、联接点误判为符号链接
-        /// </summary>
-        /// <param name="path">要检测的路径</param>
-        /// <returns>是否为符号链接</returns>
         private static bool IsSymbolicLink(string path)
         {
-            try
-            {
-                if (Directory.Exists(path))
-                {
-                    var dirInfo = new DirectoryInfo(path);
-                    // 使用 LinkTarget 属性检测真正的符号链接
-                    // LinkTarget 只对符号链接返回非 null 值，对挂载点和联接点返回 null
-                    return !string.IsNullOrEmpty(dirInfo.LinkTarget);
-                }
-                else if (File.Exists(path))
-                {
-                    var fileInfo = new FileInfo(path);
-                    // 使用 LinkTarget 属性检测真正的符号链接
-                    return !string.IsNullOrEmpty(fileInfo.LinkTarget);
-                }
-                return false;
-            }
-            catch (Exception ex)
-            {
-                // 如果检测失败，记录警告并返回 false（允许路径通过）
-                LogManager.Warning(LangManager.GetText("logMessages.checkSymbolicLinkFailed", path, ex.Message));
-                return false;
-            }
+            return ComHelper.IsSymbolicLink(path);
         }
 
         private List<System.IO.FileSystemWatcher> watchers = new List<System.IO.FileSystemWatcher>();
@@ -343,7 +314,6 @@ namespace FirewallManager
                 // 检查语言资源是否已加载，如果没有加载则尝试重新加载
                 if (!LangManager.IsLanguageLoaded())
                 {
-                    System.Diagnostics.Debug.WriteLine("语言资源未加载，尝试重新加载...");
                     LangManager.ReloadLanguageFiles();
                 }
                 
@@ -624,66 +594,9 @@ namespace FirewallManager
         /// 等待文件准备就绪（文件已完全写入）
         /// 通过尝试打开文件并检查文件大小稳定性来判断
         /// </summary>
-        /// <param name="filePath">文件路径</param>
-        /// <param name="maxRetries">最大重试次数</param>
-        /// <param name="retryDelayMs">重试间隔（毫秒）</param>
-        /// <returns>文件是否准备就绪</returns>
         private static bool WaitForFileReady(string filePath, int maxRetries, int retryDelayMs)
         {
-            long previousSize = -1;
-            int stableCount = 0;
-            const int requiredStableChecks = 2;
-
-            for (int i = 0; i < maxRetries; i++)
-            {
-                try
-                {
-                    if (!File.Exists(filePath))
-                    {
-                        Thread.Sleep(retryDelayMs);
-                        continue;
-                    }
-
-                    // 尝试以独占方式打开文件，检查文件是否正在被写入
-                    using (var fileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    {
-                        long currentSize = fileStream.Length;
-
-                        // 检查文件大小是否稳定（连续两次大小相同表示写入完成）
-                        if (currentSize == previousSize && currentSize > 0)
-                        {
-                            stableCount++;
-                            if (stableCount >= requiredStableChecks)
-                            {
-                                return true;
-                            }
-                        }
-                        else
-                        {
-                            stableCount = 0;
-                        }
-
-                        previousSize = currentSize;
-                    }
-                }
-                catch (IOException)
-                {
-                    // 文件正在被写入，等待后重试
-                    stableCount = 0;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    // 权限不足，等待后重试
-                    stableCount = 0;
-                }
-
-                if (i < maxRetries - 1)
-                {
-                    Thread.Sleep(retryDelayMs);
-                }
-            }
-
-            return false;
+            return ComHelper.WaitForFileReady(filePath, maxRetries, retryDelayMs);
         }
         
         /// <summary>
@@ -697,8 +610,26 @@ namespace FirewallManager
             try
             {
                 LogManager.Info(LangManager.GetText("logMessages.fileRenamed", e.OldFullPath, e.FullPath));
-                // 为新名称创建规则，删除旧规则
-                firewallService.CreateRuleForExe(e.FullPath);
+                
+                // 规范化路径，防止符号链接替换攻击和扩展长度路径绕过
+                string normalizedPath = Path.GetFullPath(e.FullPath);
+                
+                // 检测符号链接，防止符号链接劫持
+                if (IsSymbolicLink(normalizedPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", normalizedPath));
+                    return;
+                }
+                
+                // 验证文件名合法性
+                string fileName = Path.GetFileName(normalizedPath);
+                if (!fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                
+                // 为新名称创建规则
+                firewallService.CreateRuleForExe(normalizedPath);
             }
             catch (Exception ex)
             {
@@ -974,7 +905,7 @@ namespace FirewallManager
             {
                 string configPath = Config.GetAppDataFilePath(Config.CONFIG_FILE);
                 string configDir = Path.GetDirectoryName(configPath);
-                if (string.IsNullOrEmpty(configDir) || configDir.Equals(Path.GetFileName(configPath), StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrEmpty(configDir))
                 {
                     LogManager.Error($"Invalid config path: {configPath}");
                     return;
@@ -986,7 +917,7 @@ namespace FirewallManager
 
                 var targets = monitoredTargets.Select(t => t.Path).ToList();
                 string json = JsonSerializer.Serialize(targets, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(configPath, json, Encoding.UTF8);
+                ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
 
                 LogManager.Info(LangManager.GetText("logMessages.monitoringTargetsSaved"));
             }
@@ -1024,7 +955,7 @@ namespace FirewallManager
                         return;
                     }
 
-                    var paths = JsonSerializer.Deserialize<List<string>>(json);
+                    var paths = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions);
 
                     if (paths == null)
                     {
@@ -1189,31 +1120,9 @@ namespace FirewallManager
         /// <summary>
         /// 更新规则按钮点击事件
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
         private void updateRulesButton_Click(object sender, EventArgs e)
         {
-            // 启动更新规则任务
-            if (currentState == WorkState.Idle)
-            {
-                // 安全地重新创建 CancellationTokenSource
-                SafeRecreateCancellationTokenSource();
-                taskCompletedEvent.Reset();
-                
-                workTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await UpdateFirewallRules(cancellationTokenSource.Token);
-                    }
-                    finally
-                    {
-                        taskCompletedEvent.Set();
-                    }
-                }, cancellationTokenSource.Token);
-                
-                UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
-            }
+            StartUpdateRulesTask();
         }
 
         /// <summary>
@@ -1311,33 +1220,10 @@ namespace FirewallManager
         
         /// <summary>
         /// 白名单保存事件处理
-        /// Whitelist saved event handler
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
         private void WhitelistForm_WhitelistSaved(object sender, EventArgs e)
         {
-            // 白名单保存后，更新防火墙规则
-            if (currentState == WorkState.Idle)
-            {
-                // 安全地重新创建 CancellationTokenSource
-                SafeRecreateCancellationTokenSource();
-                taskCompletedEvent.Reset();
-                
-                workTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await UpdateFirewallRules(cancellationTokenSource.Token);
-                    }
-                    finally
-                    {
-                        taskCompletedEvent.Set();
-                    }
-                }, cancellationTokenSource.Token);
-                
-                UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
-            }
+            StartUpdateRulesTask();
         }
         
         /// <summary>
@@ -1475,10 +1361,33 @@ namespace FirewallManager
         #region 防火墙规则更新
 
         /// <summary>
-        /// 更新防火墙规则
-        /// Update firewall rules
+        /// 启动更新规则任务
         /// </summary>
-        /// <param name="cancellationToken">取消令牌</param>
+        private void StartUpdateRulesTask()
+        {
+            if (currentState != WorkState.Idle) return;
+
+            SafeRecreateCancellationTokenSource();
+            taskCompletedEvent.Reset();
+
+            workTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await UpdateFirewallRules(cancellationTokenSource.Token);
+                }
+                finally
+                {
+                    taskCompletedEvent.Set();
+                }
+            }, cancellationTokenSource.Token);
+
+            UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
+        }
+
+        /// <summary>
+        /// 更新防火墙规则
+        /// </summary>
         private async Task UpdateFirewallRules(CancellationToken cancellationToken)
         {
             try
@@ -1571,8 +1480,25 @@ namespace FirewallManager
                     return;
                 }
                 
+                // 限制剪贴板内容大小，防止内存耗尽攻击（最大 10MB）
+                if (clipboardText.Length > 10 * 1024 * 1024)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.clipboardContentTooLarge"));
+                    MessageBox.Show(LangManager.GetText("messages.clipboardTooLarge"), LangManager.GetText("messages.clipboardTooLargeTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // 限制处理路径数量，防止恶意大量路径导致 DoS
                 string[] paths = clipboardText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                if (paths.Length > 1000)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.tooManyPastedPaths", paths.Length));
+                    MessageBox.Show(LangManager.GetText("messages.tooManyPaths", paths.Length.ToString()), LangManager.GetText("messages.tooManyPathsTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                
                 int addedCount = 0;
+                int invalidCount = 0;
                 
                 foreach (string path in paths)
                 {
@@ -1580,35 +1506,43 @@ namespace FirewallManager
                     if (string.IsNullOrWhiteSpace(trimmedPath))
                         continue;
                     
-                    bool isDirectory = Directory.Exists(trimmedPath);
-                    bool isFile = File.Exists(trimmedPath) && trimmedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-                    
-                    if (isDirectory || isFile)
+                    // 先规范化路径，再检查存在性，防止路径遍历和特殊前缀绕过
+                    string normalizedPath = NormalizeAndValidatePath(trimmedPath, false);
+                    if (normalizedPath == null)
                     {
-                        // 规范化和验证路径
-                        string normalizedPath = NormalizeAndValidatePath(trimmedPath, isDirectory);
-                        if (normalizedPath == null)
-                        {
-                            LogManager.Warning(LangManager.GetText("logMessages.skipInvalidPath", trimmedPath));
-                            continue;
-                        }
-                        
-                        if (!monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            var target = new ScanTarget(normalizedPath);
-                            monitoredTargets.Add(target);
-                            folderListBox.Items.Add(target);
-                            addedCount++;
-                        }
+                        // 如果作为文件路径无效，尝试作为目录路径规范化
+                        normalizedPath = NormalizeAndValidatePath(trimmedPath, true);
+                    }
+                    
+                    if (normalizedPath == null)
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.skipInvalidPath", trimmedPath));
+                        invalidCount++;
+                        continue;
+                    }
+                    
+                    bool isDirectory = Directory.Exists(normalizedPath);
+                    bool isFile = File.Exists(normalizedPath) && normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+                    
+                    if ((isDirectory || isFile) && !monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        var target = new ScanTarget(normalizedPath);
+                        monitoredTargets.Add(target);
+                        folderListBox.Items.Add(target);
+                        addedCount++;
+                    }
+                    else
+                    {
+                        invalidCount++;
                     }
                 }
                 
                 if (addedCount > 0)
                 {
                     LogManager.Info(LangManager.GetText("logMessages.pastePathsSuccess", addedCount));
-                    SaveMonitoredTargets(); // 保存监控目标
+                    SaveMonitoredTargets();
                 }
-                else
+                else if (invalidCount > 0)
                 {
                     MessageBox.Show(LangManager.GetText("messages.noValidPath"), LangManager.GetText("messages.noValidPathTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
@@ -1675,34 +1609,10 @@ namespace FirewallManager
         /// <summary>
         /// 更新规则菜单项点击事件
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
         private void updateRulesTrayToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 启动更新规则任务
-            if (currentState == WorkState.Idle)
-            {
-                // 安全地重新创建 CancellationTokenSource
-                SafeRecreateCancellationTokenSource();
-                taskCompletedEvent.Reset();
-                
-                workTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await UpdateFirewallRules(cancellationTokenSource.Token);
-                    }
-                    finally
-                    {
-                        taskCompletedEvent.Set();
-                    }
-                }, cancellationTokenSource.Token);
-                
-                UpdateUI(WorkState.Running, LangManager.GetText("status.running"));
-                
-                // 显示系统托盘通知
-                trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), LangManager.GetText("status.updatingRules"), ToolTipIcon.Info);
-            }
+            StartUpdateRulesTask();
+            trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), LangManager.GetText("status.updatingRules"), ToolTipIcon.Info);
         }
 
         /// <summary>
