@@ -35,11 +35,13 @@
     "showMainForm": "显示主窗口",
     "updateRules": "更新规则",
     "exit": "退出",
-    "autoMonitor": "启用自动监控"
+    "autoMonitor": "启用自动监控",
+    "viewRuleDetails": "查看规则详情"
   },
   "messages": {
     "notAdmin": "请以管理员身份运行本程序",
     "notAdminTitle": "权限不足",
+    "selectExeToViewDetails": "请选择一个可执行文件以查看规则详情。",
     "trayMinimized": "程序已最小化到托盘",
     "trayUpdating": "开始更新规则...",
     "trayUpdated": "规则更新完成",
@@ -98,6 +100,7 @@
     "clearWhitelistConfirm": "确定要清空所有白名单项目吗？",
     "exportLogs": "导出日志",
     "noLogs": "暂无日志记录",
+    "logContentTruncated": "[日志内容已截断]",
     "loadWhitelistFailed": "加载白名单失败: {0}",
     "loadWhitelistFailedTitle": "错误",
     "saveWhitelistFailed": "保存白名单失败: {0}",
@@ -168,6 +171,7 @@
     "disposeError": "释放资源时发生错误",
     "removingFolderRules": "删除文件夹 {0} 时，找到 {1} 个可执行文件，准备清理对应规则",
     "removingFolderRulesCompleted": "清理完成，删除了文件夹 {0} 下所有可执行文件的防火墙规则",
+    "removedFolderRules": "已为文件夹 {0} 删除 {1} 条规则",
     "removingFolderRulesFailed": "清理文件夹规则失败: {0}",
     "clearingAllRules": "开始清空所有防火墙规则",
     "preparingClearRules": "准备清空 {0} 条防火墙规则",
@@ -299,7 +303,10 @@
     "logManager.sensitiveInfo": "敏感信息",
     "logManager.messageTruncated2": "消息被截断",
     "applicationExiting": "应用程序正在退出，资源清理完成",
-    "exitCleanupFailed": "退出时资源清理失败"
+    "exitCleanupFailed": "退出时资源清理失败",
+    "certificateOnlineRevocationCheckFailed": "在线证书吊销检查失败: {0}",
+    "certificateOfflineRevocationCheckFailed": "离线证书吊销检查失败: {0}",
+    "signatureIntegrityCheckFailed": "签名完整性检查失败: {0}"
   },
   "forms": {
     "logsForm": "防火墙管理器日志",

@@ -114,10 +114,18 @@ namespace FirewallManager
                 var logLines = LogManager.ReadLogs();
                 StringBuilder logContent = new StringBuilder();
                 
+                // 限制显示的日志内容大小（最大500KB），防止UI卡死
+                const int maxLogDisplaySize = 500 * 1024;
+                
                 if (logLines.Count > 0)
                 {
                     foreach (var line in logLines)
                     {
+                        if (logContent.Length + line.Length + Environment.NewLine.Length > maxLogDisplaySize)
+                        {
+                            logContent.AppendLine(LangManager.GetText("messages.logContentTruncated"));
+                            break;
+                        }
                         logContent.AppendLine(line);
                     }
                 }
@@ -245,6 +253,23 @@ namespace FirewallManager
         private void btnClose_Click(object sender, EventArgs e)
         {
             this.Close();
+        }
+
+        /// <summary>
+        /// 释放资源
+        /// </summary>
+        /// <param name="disposing">是否释放托管资源</param>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (saveFileDialog != null)
+                {
+                    saveFileDialog.Dispose();
+                    saveFileDialog = null;
+                }
+            }
+            base.Dispose(disposing);
         }
     }
 }

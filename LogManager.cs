@@ -6,18 +6,18 @@ using System.Text;
 using System.Threading.Tasks;
 
 namespace FirewallManager
+{
+    /// <summary>
+    /// 日志管理器类
+    /// 用于记录和读取操作日志
+    /// </summary>
+    public static class LogManager
     {
         /// <summary>
-        /// 日志管理器类
-        /// 用于记录和读取操作日志
+        /// 日志文件路径
         /// </summary>
-        public static class LogManager
-        {
-            /// <summary>
-            /// 日志文件路径
-            /// </summary>
-            private static readonly string _logFilePath;
-        
+        private static readonly string _logFilePath;
+
         /// <summary>
         /// 获取日志文件路径
         /// </summary>
@@ -94,56 +94,82 @@ namespace FirewallManager
             {
                 // 获取应用程序数据目录
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                
+
                 // 确保路径有效且安全
                 if (string.IsNullOrEmpty(appDataPath))
                 {
                     throw new InvalidOperationException(LangManager.GetText("logMessages.cannotGetAppDataDirectory"));
                 }
-                
+
                 // 构建应用程序文件夹路径
                 string appFolderPath = Path.Combine(appDataPath, Config.APP_DATA_DIR);
-                
+
                 // 规范化路径，防止路径遍历攻击
                 appFolderPath = Path.GetFullPath(appFolderPath);
-                
+
                 // 确保目录存在
                 Directory.CreateDirectory(appFolderPath);
-                
+
                 // 构建日志文件路径
                 string logFileName = Config.LOG_FILE_NAME;
-                
+
                 // 验证文件名安全性
                 if (logFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
                 {
                     throw new InvalidOperationException(LangManager.GetText("logMessages.logFileNameContainsInvalidChars"));
                 }
-                
+
                 // 设置日志文件路径
                 _logFilePath = Path.Combine(appFolderPath, logFileName);
-                
+
                 // 再次规范化最终路径
                 _logFilePath = Path.GetFullPath(_logFilePath);
-                
+
                 // 确保路径仍然在应用程序目录内
                 string expectedPrefix = appFolderPath + Path.DirectorySeparatorChar;
                 if (!_logFilePath.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(LangManager.GetText("logMessages.logPathOutsideSafeRange"));
                 }
-                
+
                 // 检测并禁止符号链接
-                if (IsSymbolicLink(_logFilePath))
+                if (ComHelper.IsSymbolicLink(_logFilePath))
                 {
                     throw new InvalidOperationException(LangManager.GetText("logMessages.logPathContainsSymbolicLink"));
                 }
             }
             catch (Exception ex)
             {
-                // 日志初始化失败，使用临时目录作为 fallback
-                string tempPath = Path.GetTempPath();
-                _logFilePath = Path.Combine(tempPath, Config.LOG_FILE_NAME);
-                LogManager.Error(LangManager.GetText("logMessages.logPathInitFailed", ex.Message));
+                // 使用安全的回退路径，并对其进行相同的验证
+                try
+                {
+                    string tempPath = Path.GetTempPath();
+                    if (string.IsNullOrEmpty(tempPath))
+                    {
+                        throw new InvalidOperationException("Cannot get temp directory");
+                    }
+                    tempPath = Path.GetFullPath(tempPath);
+                    // 拒绝符号链接和扩展长度前缀
+                    if (ComHelper.IsSymbolicLink(tempPath) ||
+                        tempPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("Temp path is not safe");
+                    }
+                    _logFilePath = Path.Combine(tempPath, Config.LOG_FILE_NAME);
+                    _logFilePath = Path.GetFullPath(_logFilePath);
+                }
+                catch
+                {
+                    // 极端情况：使用当前目录
+                    _logFilePath = Path.GetFullPath(Config.LOG_FILE_NAME);
+                }
+                // 静态构造函数阶段避免调用 LogManager 自身（防止递归）
+                // 仅使用 Console 记录，File.AppendAllText 在路径无效时会失败
+                try
+                {
+                    Console.Error.WriteLine($"LogManager initialization failed: {ex.Message}");
+                }
+                catch { }
             }
         }
 
@@ -426,13 +452,13 @@ namespace FirewallManager
                     if (File.Exists(_logFilePath))
                     {
                         FileInfo fileInfo = new FileInfo(_logFilePath);
-                        
+
                         // 如果日志文件超过大小限制，清理旧日志
                         if (fileInfo.Length > _logFileSizeLimit)
                         {
                             // 使用流式读取，避免一次性加载大文件到内存
                             var linesToKeep = new Queue<string>(_linesToKeepOnClean + 1);
-                            
+
                             using (var reader = new StreamReader(_logFilePath, Encoding.UTF8))
                             {
                                 string line;
@@ -446,7 +472,7 @@ namespace FirewallManager
                                     }
                                 }
                             }
-                            
+
                             // 写入新日志内容
                             using (var writer = new StreamWriter(_logFilePath, false, Encoding.UTF8))
                             {
@@ -479,14 +505,6 @@ namespace FirewallManager
             catch (Exception)
             {
             }
-        }
-        
-        /// <summary>
-        /// 检测路径是否为符号链接
-        /// </summary>
-        private static bool IsSymbolicLink(string path)
-        {
-            return ComHelper.IsSymbolicLink(path);
         }
     }
 }

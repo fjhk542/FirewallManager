@@ -82,17 +82,17 @@ namespace FirewallManager
         /// <summary>
         /// 当前工作状态
         /// </summary>
-        private WorkState currentState = WorkState.Idle;
+        private volatile WorkState currentState = WorkState.Idle;
 
         /// <summary>
         /// 取消令牌源
         /// </summary>
-        private CancellationTokenSource cancellationTokenSource;
+        private volatile CancellationTokenSource cancellationTokenSource;
 
         /// <summary>
         /// 工作线程
         /// </summary>
-        private Task workTask;
+        private volatile Task workTask;
 
         /// <summary>
         /// 任务完成事件
@@ -118,7 +118,7 @@ namespace FirewallManager
         /// <summary>
         /// 资源是否已释放
         /// </summary>
-        private bool resourcesReleased = false;
+        private volatile bool resourcesReleased = false;
 
         /// <summary>
         /// 释放所有资源
@@ -238,42 +238,54 @@ namespace FirewallManager
                     sanitizedPath = @"\\" + sanitizedPath.Substring(8);
                 }
 
-                // 规范化路径
-                string normalizedPath = Path.GetFullPath(sanitizedPath);
-
-                // 验证规范化后的路径不以特殊前缀开头（防止 Path.GetFullPath 保留了特殊前缀）
-                if (normalizedPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                // 使用 GetRealPath 获取规范化的真实路径（解析符号链接和挂载点）
+                string realPath = ComHelper.GetRealPath(sanitizedPath);
+                if (realPath == null)
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.rejectExtendedLengthPath", normalizedPath));
+                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", path, "GetRealPath failed"));
                     return null;
                 }
 
-                // 检查符号链接
-                if (IsSymbolicLink(normalizedPath))
+                // 验证路径不以特殊前缀开头
+                if (realPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLink", normalizedPath));
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectExtendedLengthPath", realPath));
+                    return null;
+                }
+
+                // 检查路径及其所有父目录是否包含任何 reparse point（符号链接、junction、挂载点等）
+                if (ComHelper.HasReparsePointInPath(realPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLink", realPath));
                     return null;
                 }
 
                 // 检查路径是否存在
-                if (isDirectory && !Directory.Exists(normalizedPath))
+                if (isDirectory && !Directory.Exists(realPath))
                 {
                     return null;
                 }
-                if (!isDirectory && !File.Exists(normalizedPath))
+                if (!isDirectory && !File.Exists(realPath))
                 {
                     return null;
                 }
 
                 // 检查是否为系统根目录（如 C:\），避免扫描整个系统
-                string rootPath = Path.GetPathRoot(normalizedPath);
-                if (normalizedPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+                string rootPath = Path.GetPathRoot(realPath);
+                if (realPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.rejectSystemRoot", normalizedPath));
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSystemRoot", realPath));
                     return null;
                 }
 
-                return normalizedPath;
+                // 验证路径根目录是本地驱动器
+                if (!Path.IsPathRooted(realPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.pathValidationFailed", path));
+                    return null;
+                }
+
+                return realPath;
             }
             catch (Exception ex)
             {
@@ -310,7 +322,16 @@ namespace FirewallManager
             try
             {
                 InitializeComponent();
-                
+
+                // 绑定查看规则详情的事件
+                folderListBox.DoubleClick += folderListBox_DoubleClick;
+                var viewRuleDetailsMenuItem = new ToolStripMenuItem(
+                    LangManager.GetText("menu.viewRuleDetails"),
+                    null,
+                    viewRuleDetailsMenuItem_Click);
+                contextMenuStrip.Items.Add(new ToolStripSeparator());
+                contextMenuStrip.Items.Add(viewRuleDetailsMenuItem);
+
                 // 检查语言资源是否已加载，如果没有加载则尝试重新加载
                 if (!LangManager.IsLanguageLoaded())
                 {
@@ -514,6 +535,7 @@ namespace FirewallManager
                 // 订阅事件
                 watcher.Created += FileSystemWatcher_Created;
                 watcher.Renamed += FileSystemWatcher_Renamed;
+                watcher.Changed += FileSystemWatcher_Changed;
                 
                 // 启动监控
                 watcher.EnableRaisingEvents = true;
@@ -559,8 +581,15 @@ namespace FirewallManager
             {
                 LogManager.Info(LangManager.GetText("logMessages.newFileDetected", e.FullPath));
 
-                // 使用重试机制等待文件写入完成
-                if (!WaitForFileReady(e.FullPath, maxRetries: 5, retryDelayMs: 200))
+                // 显式验证 .exe 扩展名，防止 Filter 在某些 Windows 版本上匹配短文件名
+                string fileName = Path.GetFileName(e.FullPath);
+                if (!fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                // 使用重试机制等待文件写入完成（增加重试次数和等待时间）
+                if (!WaitForFileReady(e.FullPath, maxRetries: 10, retryDelayMs: 500))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.fileNotReadyAfterRetries", e.FullPath));
                     return;
@@ -573,11 +602,25 @@ namespace FirewallManager
                     return;
                 }
 
-                // 获取文件的完整路径并验证其与原始事件路径一致（防止符号链接替换攻击）
-                string fullPath = Path.GetFullPath(e.FullPath);
-                if (IsSymbolicLink(fullPath))
+                // 使用 GetRealPath 获取真实路径（解析符号链接和挂载点）
+                string fullPath = ComHelper.GetRealPath(e.FullPath);
+                if (fullPath == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", e.FullPath, "GetRealPath failed"));
+                    return;
+                }
+
+                // 检查是否包含任何 reparse point
+                if (ComHelper.HasReparsePoint(fullPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
+                    return;
+                }
+
+                // 验证调用者进程身份，防止恶意进程注入调用
+                if (!ComHelper.IsFilePathTrusted(fullPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", fullPath));
                     return;
                 }
 
@@ -611,11 +654,16 @@ namespace FirewallManager
             {
                 LogManager.Info(LangManager.GetText("logMessages.fileRenamed", e.OldFullPath, e.FullPath));
                 
-                // 规范化路径，防止符号链接替换攻击和扩展长度路径绕过
-                string normalizedPath = Path.GetFullPath(e.FullPath);
+                // 使用 GetRealPath 获取真实路径（解析符号链接和挂载点）
+                string normalizedPath = ComHelper.GetRealPath(e.FullPath);
+                if (normalizedPath == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", e.FullPath, "GetRealPath failed"));
+                    return;
+                }
                 
                 // 检测符号链接，防止符号链接劫持
-                if (IsSymbolicLink(normalizedPath))
+                if (ComHelper.HasReparsePoint(normalizedPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", normalizedPath));
                     return;
@@ -634,6 +682,63 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.processFileRenamedEventFailed"), ex);
+            }
+        }
+
+        /// <summary>
+        /// 文件修改事件处理
+        /// 当文件被修改时重新验证并更新规则
+        /// </summary>
+        /// <param name="sender">发送者</param>
+        /// <param name="e">事件参数</param>
+        private void FileSystemWatcher_Changed(object sender, System.IO.FileSystemEventArgs e)
+        {
+            try
+            {
+                LogManager.Info(LangManager.GetText("logMessages.fileChanged", e.FullPath));
+
+                // 显式验证 .exe 扩展名
+                string fileName = Path.GetFileName(e.FullPath);
+                if (!fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                // 使用重试机制等待文件写入完成
+                if (!WaitForFileReady(e.FullPath, maxRetries: 10, retryDelayMs: 500))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.fileNotReadyAfterRetries", e.FullPath));
+                    return;
+                }
+
+                // 获取真实路径
+                string fullPath = ComHelper.GetRealPath(e.FullPath);
+                if (fullPath == null)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", e.FullPath, "GetRealPath failed"));
+                    return;
+                }
+
+                // 检查 reparse point
+                if (ComHelper.HasReparsePoint(fullPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
+                    return;
+                }
+
+                // 验证文件签名
+                if (!ComHelper.IsFilePathTrusted(fullPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", fullPath));
+                    return;
+                }
+
+                // 更新规则
+                firewallService.CreateRuleForExe(fullPath);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error(LangManager.GetText("logMessages.processFileChangedEventFailed"), ex);
             }
         }
         
@@ -919,6 +1024,16 @@ namespace FirewallManager
                 string json = JsonSerializer.Serialize(targets, new JsonSerializerOptions { WriteIndented = true });
                 ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
 
+                // 保存后立即更新完整性校验值
+                if (!Config.SaveConfigIntegrityHash(configPath))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.configIntegrityHashSaveFailed"));
+                }
+                else
+                {
+                    LogManager.Info(LangManager.GetText("logMessages.configIntegrityHashSaved"));
+                }
+
                 LogManager.Info(LangManager.GetText("logMessages.monitoringTargetsSaved"));
             }
             catch (UnauthorizedAccessException ex)
@@ -946,7 +1061,19 @@ namespace FirewallManager
 
                 if (File.Exists(configPath))
                 {
-                    string json = File.ReadAllText(configPath, Encoding.UTF8);
+                    // 加载前验证配置文件完整性（原子操作，防止TOCTOU攻击）
+                    string json;
+                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json))
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.configIntegrityVerificationFailed"));
+                        MessageBox.Show(
+                            LangManager.GetText("messages.configIntegrityVerificationFailed"),
+                            LangManager.GetText("messages.warningTitle"),
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+
                     LogManager.Info($"Config file content length: {json.Length} characters");
 
                     if (string.IsNullOrWhiteSpace(json))
@@ -979,12 +1106,31 @@ namespace FirewallManager
                     foreach (var path in paths)
                     {
                         if (path == null) continue;
-                        bool exists = Directory.Exists(path) || (File.Exists(path) && path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
-                        bool alreadyAdded = monitoredTargets.Any(t => t.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+
+                        // 使用 NormalizeAndValidatePath 验证每个路径
+                        // 防止配置文件中包含符号链接、Junction、扩展长度路径等绕过攻击
+                        bool isDir = Directory.Exists(path);
+                        bool isExeFile = !isDir && File.Exists(path) &&
+                                         path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+                        bool isDirectory = isDir;
+                        bool isFile = isExeFile;
+
+                        string normalizedPath = NormalizeAndValidatePath(path, isDirectory || isFile);
+                        if (normalizedPath == null)
+                        {
+                            LogManager.Warning($"Path failed validation, skipping: {path}");
+                            skippedCount++;
+                            continue;
+                        }
+
+                        bool exists = Directory.Exists(normalizedPath) ||
+                                      (File.Exists(normalizedPath) &&
+                                       normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+                        bool alreadyAdded = monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase));
 
                         if (exists && !alreadyAdded)
                         {
-                            var target = new ScanTarget(path);
+                            var target = new ScanTarget(normalizedPath);
                             monitoredTargets.Add(target);
                             folderListBox.Items.Add(target);
                             addedCount++;
@@ -994,11 +1140,11 @@ namespace FirewallManager
                             skippedCount++;
                             if (!exists)
                             {
-                                LogManager.Warning($"Path no longer exists, skipping: {path}");
+                                LogManager.Warning($"Path no longer exists, skipping: {normalizedPath}");
                             }
                             else if (alreadyAdded)
                             {
-                                LogManager.Warning($"Path already added, skipping: {path}");
+                                LogManager.Warning($"Path already added, skipping: {normalizedPath}");
                             }
                         }
                     }
@@ -1030,17 +1176,87 @@ namespace FirewallManager
         {
             try
             {
-                dynamic rule = firewallService.GetRuleDetails(ruleName);
+                RuleDetailsInfo rule = firewallService.GetRuleDetails(ruleName);
                 if (rule != null)
+                    {
+                        var detailsForm = new RuleDetailsForm(rule, ruleName, firewallService);
+                        detailsForm.ShowDialog();
+                    }
+                else
                 {
-                    var detailsForm = new RuleDetailsForm(rule, ruleName);
-                    detailsForm.ShowDialog();
+                    MessageBox.Show(
+                        LangManager.GetText("messages.ruleNotFound"),
+                        LangManager.GetText("messages.errorTitle"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
                 }
             }
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.viewRuleDetailsFailed", ex.Message));
                 MessageBox.Show(LangManager.GetText("messages.viewRulesDetailsFailed", ex.Message), LangManager.GetText("messages.viewRulesDetailsFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// 文件夹列表双击事件 - 查看选中目标的规则详情
+        /// </summary>
+        private void folderListBox_DoubleClick(object sender, EventArgs e)
+        {
+            if (folderListBox.SelectedItem is ScanTarget selectedTarget)
+            {
+                if (selectedTarget.IsExe)
+                {
+                    string fileName = Path.GetFileNameWithoutExtension(selectedTarget.Path);
+                    string sanitizedFileName = firewallService.SanitizeRuleName(fileName);
+                    string pathHash = firewallService.GetPathHash(selectedTarget.Path);
+                    string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                    ViewRuleDetails(ruleName);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        LangManager.GetText("messages.selectExeToViewDetails"),
+                        LangManager.GetText("messages.informationTitle"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 右键菜单打开事件 - 在右键菜单显示前选中点击的列表项
+        /// </summary>
+        private void contextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            var contextMenu = sender as ContextMenuStrip;
+            if (contextMenu != null && folderListBox != null)
+            {
+                System.Drawing.Point mousePos = folderListBox.PointToClient(System.Windows.Forms.Cursor.Position);
+                int index = folderListBox.IndexFromPoint(mousePos);
+                if (index >= 0 && index < folderListBox.Items.Count)
+                {
+                    folderListBox.SelectedIndex = index;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 右键菜单查看规则详情菜单项点击事件
+        /// </summary>
+        private void viewRuleDetailsMenuItem_Click(object sender, EventArgs e)
+        {
+            if (folderListBox.SelectedItem is ScanTarget selectedTarget)
+            {
+                folderListBox_DoubleClick(sender, e);
+            }
+            else
+            {
+                MessageBox.Show(
+                    LangManager.GetText("messages.selectExeToViewDetails"),
+                    LangManager.GetText("messages.informationTitle"),
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
             }
         }
 
@@ -1168,7 +1384,33 @@ namespace FirewallManager
                 monitoredTargets.Remove(selectedTarget);
                 folderListBox.Items.Remove(selectedTarget);
                 SaveMonitoredTargets(); // 保存监控目标
-                
+
+                // 移除该文件夹对应的防火墙规则
+                try
+                {
+                    if (!selectedTarget.IsExe)
+                    {
+                        int removedCount = firewallService.RemoveFolderRules(selectedTarget.Path);
+                        LogManager.Info(LangManager.GetText("logMessages.removedFolderRules", selectedTarget.Path, removedCount));
+                    }
+                    else
+                    {
+                        string fileName = Path.GetFileNameWithoutExtension(selectedTarget.Path);
+                        string sanitizedFileName = firewallService.SanitizeRuleName(fileName);
+                        string pathHash = firewallService.GetPathHash(selectedTarget.Path);
+                        string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                        if (firewallService.CheckRuleExists(ruleName))
+                        {
+                            firewallService.DeleteRule(ruleName);
+                            LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.removeFolderRulesFailed", selectedTarget.Path), ex);
+                }
+
                 // 如果自动监控已启用，重新初始化文件系统监控器
                 if (autoMonitorCheckBox.Checked)
                 {
@@ -1292,7 +1534,11 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 LogManager.Error("Failed to change language", ex);
-                MessageBox.Show(LangManager.GetText("messages.errorTitle"), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(
+                    LangManager.GetText("messages.languageChangeFailed"),
+                    LangManager.GetText("messages.errorTitle"),
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
             }
         }
 
@@ -1331,7 +1577,7 @@ namespace FirewallManager
         /// </summary>
         /// <param name="sender">发送者</param>
         /// <param name="e">事件参数</param>
-        private void stopButton_Click(object sender, EventArgs e)
+        private async void stopButton_Click(object sender, EventArgs e)
         {
             if (currentState == WorkState.Running || currentState == WorkState.Paused)
             {
@@ -1340,17 +1586,32 @@ namespace FirewallManager
                 {
                     pauseEvent.Set();
                 }
-                
+
                 // 取消任务
                 cancellationTokenSource?.Cancel();
                 UpdateUI(WorkState.Stopping, LangManager.GetText("status.stopping"));
-                
-                // 等待任务完成
-                taskCompletedEvent.WaitOne(5000);
-                
+
+                // 异步等待任务完成，避免阻塞UI线程
+                if (workTask != null)
+                {
+                    try
+                    {
+                        var timeoutTask = Task.Delay(5000);
+                        var completedTask = await Task.WhenAny(workTask, timeoutTask);
+                        if (completedTask == timeoutTask)
+                        {
+                            LogManager.Warning(LangManager.GetText("logMessages.stopTaskTimeout"));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogManager.Error(LangManager.GetText("logMessages.stopTaskFailed", ex.Message));
+                    }
+                }
+
                 // 重置暂停事件
                 pauseEvent.Set();
-                
+
                 UpdateUI(WorkState.Idle, LangManager.GetText("status.ready"));
                 LogManager.Info(LangManager.GetText("logMessages.taskStopped"));
             }
@@ -1420,18 +1681,6 @@ namespace FirewallManager
 
         #region 托盘图标事件
 
-        /// <summary>
-        /// 托盘图标双击事件
-        /// Tray icon double click event
-        /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
-        private void trayIcon_DoubleClick(object sender, EventArgs e)
-        {
-            this.Show();
-            this.WindowState = FormWindowState.Normal;
-        }
-
         #endregion
 
         #region 窗体事件
@@ -1480,8 +1729,8 @@ namespace FirewallManager
                     return;
                 }
                 
-                // 限制剪贴板内容大小，防止内存耗尽攻击（最大 10MB）
-                if (clipboardText.Length > 10 * 1024 * 1024)
+                // 限制剪贴板内容大小，防止内存耗尽攻击（最大 1MB）
+                if (clipboardText.Length > 1024 * 1024)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.clipboardContentTooLarge"));
                     MessageBox.Show(LangManager.GetText("messages.clipboardTooLarge"), LangManager.GetText("messages.clipboardTooLargeTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1505,7 +1754,21 @@ namespace FirewallManager
                     string trimmedPath = path.Trim();
                     if (string.IsNullOrWhiteSpace(trimmedPath))
                         continue;
-                    
+
+                    // 限制单条路径长度（最大500字符），防止超长路径导致内存问题
+                    if (trimmedPath.Length > 500)
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.pathTooLong", trimmedPath.Substring(0, 100)));
+                        invalidCount++;
+                        continue;
+                    }
+
+                    // 过滤控制字符，防止路径注入和日志伪造
+                    trimmedPath = System.Text.RegularExpressions.Regex.Replace(
+                        trimmedPath, @"[\x00-\x1F\x7F]", string.Empty);
+                    if (string.IsNullOrWhiteSpace(trimmedPath))
+                        continue;
+
                     // 先规范化路径，再检查存在性，防止路径遍历和特殊前缀绕过
                     string normalizedPath = NormalizeAndValidatePath(trimmedPath, false);
                     if (normalizedPath == null)

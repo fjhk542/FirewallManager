@@ -3,7 +3,7 @@
 ## 报告概述
 
 - **项目名称**: FirewallManager (Windows防火墙出站规则管理工具)
-- **报告日期**: 2026-05-22
+- **报告日期**: 2026-06-30
 - **安全评估范围**: 全部源代码文件（C#）
 - **评估方法**: 静态代码分析 + 手动安全审查
 
@@ -456,6 +456,416 @@ File.AppendAllText(_logFilePath, logMessage + Environment.NewLine, Encoding.UTF8
 
 ---
 
+### [高危] H-005: ALL_FIREWALL_PROFILES 配置错误
+
+#### 漏洞描述
+`Config.cs` 中 `ALL_FIREWALL_PROFILES` 常量被错误设置为 2，导致防火墙规则仅应用到 Private 配置文件，而忽略了 Domain 和 Public 配置文件。
+
+#### 风险等级
+**高危** - CVSS 8.0
+
+#### 风险影响
+- 防火墙规则在 Domain 和 Public 网络环境下不生效
+- 攻击者可在这些网络环境下绕过防火墙限制
+- 安全防护存在重大缺口
+
+#### 修复措施
+1. 将 `ALL_FIREWALL_PROFILES` 常量从 2 修改为 7
+2. 7 表示所有三个配置文件的组合：Domain (1) + Private (2) + Public (4) = 7
+3. 确保所有防火墙规则应用到所有网络配置文件
+
+#### 验证结果
+- 代码审查确认常量值正确设置为 7
+- 所有规则创建操作使用该常量
+
+---
+
+### [中危] M-005: HMAC 密钥明文存储风险
+
+#### 漏洞描述
+HMAC 密钥以明文形式存储在文件系统中，若攻击者获得文件系统访问权限，可直接读取密钥用于伪造配置文件完整性校验值。
+
+#### 风险等级
+**中危** - CVSS 5.5
+
+#### 风险影响
+- 攻击者可读取密钥并伪造配置文件完整性校验
+- 配置文件篡改防护失效
+- 白名单等关键配置可被恶意修改
+
+#### 修复措施
+1. 使用 Windows DPAPI (`ProtectedData.Protect`) 加密 HMAC 密钥
+2. 添加随机熵值增强加密强度
+3. 密钥加载时使用 `ProtectedData.Unprotect` 解密
+4. 确保加密仅在当前用户上下文有效
+
+#### 验证结果
+- 密钥文件内容已加密，无法直接读取
+- 密钥加载和解密流程正常工作
+
+---
+
+### [中危] M-006: 关键操作缺乏用户确认
+
+#### 漏洞描述
+修改防火墙规则的 Action（允许/阻止）或 Direction（入站/出站）时，未要求用户确认，可能导致误操作或恶意软件自动修改规则。
+
+#### 风险等级
+**中危** - CVSS 5.3
+
+#### 风险影响
+- 误操作可能导致网络连接异常
+- 恶意软件可自动修改规则绕过防火墙
+- 缺乏操作审计和确认机制
+
+#### 修复措施
+1. 在修改规则 Action/Direction 前显示安全确认对话框
+2. 确认对话框包含详细的操作信息和风险提示
+3. 用户必须明确确认后才执行操作
+4. 操作记录到日志系统
+
+#### 验证结果
+- 规则修改操作前显示安全确认对话框
+- 用户取消确认时操作被中止
+
+---
+
+### [中危] M-007: UI 阻塞操作缺乏超时处理
+
+#### 漏洞描述
+关键操作（如停止扫描）使用同步方式执行，缺乏超时处理，若操作长时间未完成会导致 UI 阻塞。
+
+#### 风险等级
+**中危** - CVSS 5.0
+
+#### 风险影响
+- UI 阻塞导致用户无法操作
+- 应用程序可能无响应
+- 影响用户体验和系统稳定性
+
+#### 修复措施
+1. 使用 `async/await` 模式实现异步操作
+2. 使用 `Task.WhenAny` 实现超时控制
+3. 设置合理的超时时间（30秒）
+4. 超时后显示提示信息并继续操作
+
+#### 验证结果
+- 关键操作使用异步模式
+- 超时处理机制正常工作
+- UI 保持响应状态
+
+---
+
+### [低危] L-006: COM 对象验证不足
+
+#### 漏洞描述
+`ValidateComObjectType()` 方法使用直接类型相等检查，而非 `IsAssignableFrom()` 和 GUID 比较，可能导致类型验证不准确。
+
+#### 风险等级
+**低危** - CVSS 3.5
+
+#### 风险影响
+- COM 对象类型验证可能失败
+- 潜在的 COM 对象劫持攻击风险
+
+#### 修复措施
+1. 使用 `IsAssignableFrom()` 进行类型兼容性检查
+2. 添加 GUID 比较验证 COM 对象接口
+3. 确保验证逻辑覆盖所有 COM 对象创建场景
+
+#### 验证结果
+- COM 对象类型验证逻辑增强
+- 与项目安全编码规范保持一致
+
+---
+
+### [低危] L-007: 原子写操作资源泄漏
+
+#### 漏洞描述
+`AtomicWriteAllText` 和 `AtomicWriteAllBytes` 方法在发生异常时可能遗留临时文件，导致资源泄漏。
+
+#### 风险等级
+**低危** - CVSS 3.0
+
+#### 风险影响
+- 临时文件可能占用磁盘空间
+- 多次异常后可能积累大量临时文件
+
+#### 修复措施
+1. 添加 `try-finally` 块确保临时文件清理
+2. 在 `finally` 块中检查并删除临时文件
+3. 确保无论操作成功或失败，临时文件都被清理
+
+#### 验证结果
+- 原子写操作异常时临时文件被正确清理
+- 代码审查确认 try-finally 块正确实现
+
+---
+
+### [低危] L-008: HMAC 密钥文件权限过宽
+
+#### 漏洞描述
+HMAC 密钥文件权限未限制，普通用户可能读取密钥文件内容。
+
+#### 风险等级
+**低危** - CVSS 3.3
+
+#### 风险影响
+- 低权限用户可能读取加密的密钥文件
+- 密钥泄露风险增加
+
+#### 修复措施
+1. 添加 `SetSecureFilePermissions()` 方法
+2. 设置文件 ACL 仅允许 Administrators 和 SYSTEM 账户访问
+3. 移除其他用户组的访问权限
+4. 在密钥文件创建后立即设置安全权限
+
+#### 验证结果
+- 密钥文件权限已限制为 Administrators 和 SYSTEM
+- 普通用户无法访问密钥文件
+
+---
+
+### [低危] L-009: Junction 点检测缺失
+
+#### 漏洞描述
+路径验证仅检测符号链接，未检测 NTFS Junction 点（重解析点），攻击者可通过 Junction 点绕过路径安全验证。
+
+#### 风险等级
+**低危** - CVSS 3.7
+
+#### 风险影响
+- Junction 点可指向系统敏感路径
+- 绕过路径安全验证机制
+
+#### 修复措施
+1. 添加 `IsJunction()` 方法使用 `DeviceIoControl` 检测 NTFS 重解析点
+2. 检测重解析点标签是否为 0xA0000003（Junction 点）
+3. 在路径验证流程中添加 Junction 点检测
+4. 拒绝 Junction 点路径
+
+#### 验证结果
+- Junction 点检测方法正确实现
+- 路径验证流程包含 Junction 点检测
+
+---
+
+### [低危] L-010: 规则删除不完整
+
+#### 漏洞描述
+删除监控文件夹时，未同步删除该文件夹下已创建的防火墙规则，导致规则残留。
+
+#### 风险等级
+**低危** - CVSS 3.0
+
+#### 风险影响
+- 残留规则可能阻止已删除路径的程序访问网络
+- 规则管理不一致
+
+#### 修复措施
+1. 在 `removeFolderButton_Click` 中调用 `RemoveFolderRules()` 方法
+2. 删除文件夹时同步删除关联的所有防火墙规则
+3. 记录规则删除操作到日志系统
+
+#### 验证结果
+- 删除文件夹时关联规则被同步删除
+- 日志记录完整的规则删除操作
+
+---
+
+### [高危] H-006: Authenticode 签名验证不完整
+
+#### 漏洞描述
+`IsFileDigitallySigned` 方法仅验证证书链有效性，但未验证文件内容与数字签名是否匹配。攻击者可获取一个已签名的合法可执行文件，修改其内容（使 Authenticode 签名失效），由于证书仍嵌入且证书链仍有效，方法会返回 `true`，导致篡改文件被信任。
+
+#### 风险等级
+**高危** - CVSS 7.5
+
+#### 风险影响
+- 攻击者可篡改已签名的可执行文件并绕过白名单检查
+- 恶意软件可伪装成合法签名程序
+- 文件签名验证机制失效
+
+#### 修复措施
+1. 添加 `WinVerifyTrust` API 调用 (`VerifyFileSignatureIntegrity`)，验证文件内容与数字签名匹配
+2. 在验证证书链前先验证签名完整性
+3. 使用 `WINTRUST_ACTION_GENERIC_VERIFY_V2` 策略执行完整的 Authenticode 验证
+4. 添加详细的错误日志记录
+
+#### 修复前后对比
+
+**修复前**:
+```csharp
+private static bool IsFileDigitallySigned(string filePath)
+{
+    using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
+    // 仅验证证书链，未验证签名完整性
+    return VerifyCertificateChain(cert);
+}
+```
+
+**修复后**:
+```csharp
+private static bool IsFileDigitallySigned(string filePath)
+{
+    // 首先验证签名完整性（最重要）
+    if (!VerifyFileSignatureIntegrity(filePath))
+        return false;
+    // 然后验证证书链
+    using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
+    return VerifyCertificateChain(cert);
+}
+```
+
+#### 验证结果
+- `WinVerifyTrust` API 集成完成
+- 签名完整性检查在证书链验证之前执行
+- 篡改后的签名文件被正确拒绝
+
+---
+
+### [高危] H-007: COM 对象验证 ProgID 劫持
+
+#### 漏洞描述
+`ValidateComObjectType` 方法使用 `Type.GetTypeFromProgID(expectedProgId)` 获取期望类型，这与 CLSID 硬编码防护的目的完全相反。如果攻击者劫持了 ProgID，验证器会验证劫持后的类型，导致整个 COM 安全模型被绕过。
+
+#### 风险等级
+**高危** - CVSS 7.0
+
+#### 风险影响
+- ProgID 劫持可使恶意 COM 对象通过类型验证
+- 防火墙规则管理操作可能被重定向到恶意对象
+- COM 安全防护失效
+
+#### 修复措施
+1. 修改方法签名为 `ValidateComObjectType(object obj, string expectedClsid, string expectedIid)`
+2. 使用 CLSID 验证 COM 对象类型，而非 ProgID
+3. 添加 IID 接口验证，确保对象实现正确的接口
+4. 更新所有调用方使用新的方法签名
+
+#### 修复前后对比
+
+**修复前**:
+```csharp
+internal static bool ValidateComObjectType(object obj, string expectedProgId)
+{
+    Type expectedType = Type.GetTypeFromProgID(expectedProgId);
+    return expectedType.IsAssignableFrom(obj.GetType());
+}
+```
+
+**修复后**:
+```csharp
+internal static bool ValidateComObjectType(object obj, string expectedClsid, string expectedIid)
+{
+    Guid expectedClsidGuid = Guid.Parse(expectedClsid);
+    Guid objClsid = obj.GetType().GUID;
+    if (objClsid != expectedClsidGuid)
+        return false;
+    // 验证接口 IID
+    // ...
+}
+```
+
+#### 验证结果
+- COM 对象验证不再依赖 ProgID
+- CLSID 和 IID 双重验证机制完整
+- 与 `CreateComObjectWithClsid` 保持一致
+
+---
+
+### [高危] H-008: 配置文件 TOCTOU 竞态条件
+
+#### 漏洞描述
+`VerifyConfigIntegrity` 方法使用 `FileShare.None` 锁定文件进行完整性验证，但验证完成后锁被释放。随后的 `File.ReadAllText` 在无保护状态下读取文件，存在时间窗口允许攻击者在验证和读取之间替换配置文件。
+
+#### 风险等级
+**高危** - CVSS 7.0
+
+#### 风险影响
+- 攻击者可在验证通过后、读取前替换配置文件
+- 恶意配置可被加载并执行
+- 完整性校验机制失效
+
+#### 修复措施
+1. 添加 `VerifyConfigIntegrityAndRead` 方法，在锁定状态下完成验证和读取
+2. 使用 `out` 参数返回文件内容，确保验证的内容与读取的内容一致
+3. 更新 `Form1.cs` 和 `WhitelistForm.cs` 使用新方法
+
+#### 修复前后对比
+
+**修复前**:
+```csharp
+if (Config.VerifyConfigIntegrity(configPath))
+{
+    // 锁已释放，存在TOCTOU窗口
+    string json = File.ReadAllText(configPath);
+}
+```
+
+**修复后**:
+```csharp
+string json;
+if (Config.VerifyConfigIntegrityAndRead(configPath, out json))
+{
+    // 验证和读取在同一锁定状态下完成
+}
+```
+
+#### 验证结果
+- 配置文件验证和读取为原子操作
+- 无 TOCTOU 时间窗口
+- 调用方已更新
+
+---
+
+### [中危] M-008: 规则名称验证不一致
+
+#### 漏洞描述
+`GetRuleDetails` 对规则名称进行长度验证（最大256字符），但 `UpdateRule` 和 `DeleteRule` 缺少相同的验证。这种不一致可能导致超长规则名称到达 COM API 造成异常或资源消耗。
+
+#### 风险等级
+**中危** - CVSS 5.5
+
+#### 风险影响
+- 超长规则名称可能导致 COM API 异常
+- 资源消耗攻击风险
+- 输入验证不一致
+
+#### 修复措施
+1. 在 `UpdateRule` 和 `DeleteRule` 中添加与 `GetRuleDetails` 一致的规则名称验证
+2. 验证逻辑：空检查 + 长度限制（最大256字符）
+
+#### 验证结果
+- 所有规则操作方法使用一致的验证逻辑
+- 输入验证覆盖完整
+
+---
+
+### [中危] M-009: 目录打开缺少 FILE_FLAG_BACKUP_SEMANTICS
+
+#### 漏洞描述
+`HasDangerousReparseTag` 使用 `File.Open` 打开目录，但未设置 `FILE_FLAG_BACKUP_SEMANTICS` 标志。在某些权限环境下，这会导致目录打开失败，触发 catch 块返回 `true`（fail-closed），误将合法目录识别为危险路径。
+
+#### 风险等级
+**中危** - CVSS 5.0
+
+#### 风险影响
+- 合法目录可能被误判为危险路径
+- 路径验证可能失败
+- 用户体验受影响
+
+#### 修复措施
+1. 使用 P/Invoke 调用 `CreateFile` API 打开文件/目录
+2. 为目录添加 `FILE_FLAG_BACKUP_SEMANTICS` 标志
+3. 正确处理句柄和资源释放
+
+#### 验证结果
+- 目录打开使用正确的 Win32 API 标志
+- 资源释放完整
+
+---
+
 ## 安全加固措施汇总
 
 | 编号 | 漏洞类型 | 风险等级 | 状态 |
@@ -464,15 +874,29 @@ File.AppendAllText(_logFilePath, logMessage + Environment.NewLine, Encoding.UTF8
 | H-002 | 重命名事件路径验证缺失 | 高危 | 已修复 |
 | H-003 | TOCTOU 竞态条件 | 高危 | 已修复 |
 | H-004 | 白名单加载路径校验缺失 | 高危 | 已修复 |
+| H-005 | ALL_FIREWALL_PROFILES 配置错误 | 高危 | 已修复 |
+| H-006 | Authenticode 签名验证不完整 | 高危 | 已修复 |
+| H-007 | COM 对象验证 ProgID 劫持 | 高危 | 已修复 |
+| H-008 | 配置文件 TOCTOU 竞态条件 | 高危 | 已修复 |
 | M-001 | 日志导出路径遍历 | 中危 | 已修复 |
 | M-002 | COM 对象动态调用风险 | 中危 | 已修复 |
 | M-003 | 日志注入攻击 | 中危 | 已修复 |
 | M-004 | 日志频率限制缺失 | 中危 | 已修复 |
+| M-005 | HMAC 密钥明文存储风险 | 中危 | 已修复 |
+| M-006 | 关键操作缺乏用户确认 | 中危 | 已修复 |
+| M-007 | UI 阻塞操作缺乏超时处理 | 中危 | 已修复 |
+| M-008 | 规则名称验证不一致 | 中危 | 已修复 |
+| M-009 | 目录打开缺少 FILE_FLAG_BACKUP_SEMANTICS | 中危 | 已修复 |
 | L-001 | MD5 哈希算法 | 低危 | 已修复 |
 | L-002 | 调试输出信息泄露 | 低危 | 已修复 |
 | L-003 | JSON 反序列化验证不足 | 低危 | 已修复 |
 | L-004 | 资源释放不完整 | 低危 | 已修复 |
 | L-005 | 配置文件完整性校验缺失 | 低危 | 已修复 |
+| L-006 | COM 对象验证不足 | 低危 | 已修复 |
+| L-007 | 原子写操作资源泄漏 | 低危 | 已修复 |
+| L-008 | HMAC 密钥文件权限过宽 | 低危 | 已修复 |
+| L-009 | Junction 点检测缺失 | 低危 | 已修复 |
+| L-010 | 规则删除不完整 | 低危 | 已修复 |
 
 ## 回归测试结果
 

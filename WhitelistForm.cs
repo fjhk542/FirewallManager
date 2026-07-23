@@ -37,13 +37,14 @@ namespace FirewallManager
         /// 白名单缓存
         /// 使用 HashSet 实现 O(1) 查找
         /// 键为规范化后的路径（全小写）
+        /// 使用 volatile 实现 copy-on-write 模式，减少锁竞争
         /// </summary>
-        private static HashSet<string> whitelistCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static volatile HashSet<string> whitelistCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         
         /// <summary>
         /// 白名单缓存加载标志
         /// </summary>
-        private static bool whitelistCacheLoaded = false;
+        private static volatile bool whitelistCacheLoaded = false;
 
         /// <summary>
         /// 白名单文件的最后修改时间
@@ -362,10 +363,13 @@ namespace FirewallManager
                 
                 string json = JsonSerializer.Serialize(whitelist, new JsonSerializerOptions { WriteIndented = true });
                 ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
-                
+
                 // 保存后更新完整性校验值
                 Config.SaveConfigIntegrityHash(configPath);
-                
+
+                // 设置安全文件权限，限制仅管理员和SYSTEM账户可修改
+                Config.SetSecureFilePermissionsPublic(configPath);
+
                 LogManager.Info(LangManager.GetText("logMessages.saveWhitelistItems", whitelist.Count));
                 MessageBox.Show(LangManager.GetText("messages.whitelistSaved"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 
@@ -490,28 +494,33 @@ namespace FirewallManager
                     return false;
                 }
 
-                // 确保缓存已加载
+                // 确保缓存已加载（线程安全的双重检查）
                 if (!whitelistCacheLoaded)
                 {
-                    RefreshWhitelistCache();
+                    lock (whitelistLock)
+                    {
+                        if (!whitelistCacheLoaded)
+                        {
+                            RefreshWhitelistCache();
+                        }
+                    }
                 }
 
-                // 规范化路径
                 string normalizedAppPath;
                 try
                 {
                     normalizedAppPath = Path.GetFullPath(appPath);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    normalizedAppPath = appPath;
+                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", appPath, ex.Message));
+                    return false;
                 }
 
-                // 使用 HashSet 进行 O(1) 查找
-                lock (whitelistLock)
-                {
-                    return whitelistCache.Contains(normalizedAppPath);
-                }
+                // 使用 copy-on-write 模式：读取时不加锁，直接访问 volatile 引用
+                // 刷新时会替换整个集合，保证读取操作的无锁化和线程安全
+                var cacheSnapshot = whitelistCache;
+                return cacheSnapshot.Contains(normalizedAppPath);
             }
             catch
             {
@@ -528,83 +537,86 @@ namespace FirewallManager
             try
             {
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
-                
+
+                HashSet<string> newCache;
+
                 if (!File.Exists(configPath))
                 {
-                    lock (whitelistLock)
+                    newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // 验证文件大小，防止恶意大文件导致内存耗尽（先检查后读取）
+                    var fileInfo = new FileInfo(configPath);
+                    if (fileInfo.Length > 10 * 1024 * 1024)
                     {
-                        whitelistCache.Clear();
-                        whitelistCacheLoaded = true;
-                    }
-                    return;
-                }
-
-                // 验证配置文件完整性，防止被篡改
-                if (!Config.VerifyConfigIntegrity(configPath))
-                {
-                    LogManager.Error(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"));
-                    return;
-                }
-
-                string json = File.ReadAllText(configPath, Encoding.UTF8);
-                
-                // 验证 JSON 内容大小，防止恶意大文件导致内存耗尽
-                if (json.Length > 10 * 1024 * 1024)
-                {
-                    LogManager.Error(LangManager.GetText("logMessages.whitelistFileTooLarge"));
-                    return;
-                }
-                
-                var paths = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions);
-
-                var newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (paths != null)
-                {
-                    // 验证条目数量，防止恶意大量条目导致 DoS
-                    if (paths.Count > 100000)
-                    {
-                        LogManager.Error(LangManager.GetText("logMessages.whitelistTooManyEntries", paths.Count));
+                        LogManager.Error(LangManager.GetText("logMessages.whitelistFileTooLarge"));
                         return;
                     }
-                    
-                    foreach (var path in paths)
+
+                    // 验证配置文件完整性并读取内容（原子操作，防止TOCTOU攻击）
+                    string json;
+                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json))
                     {
-                        if (string.IsNullOrEmpty(path)) continue;
-                        try
+                        LogManager.Error(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"));
+                        newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    }
+                    else
+                    {
+                        var paths = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions);
+
+                        newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        if (paths != null)
                         {
-                            string normalized = Path.GetFullPath(path);
-                            
-                            // 拒绝扩展长度路径前缀，防止路径绕过攻击
-                            if (normalized.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                            // 验证条目数量，防止恶意大量条目导致 DoS
+                            if (paths.Count > 100000)
                             {
-                                LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectExtendedPath", normalized));
-                                continue;
+                                LogManager.Error(LangManager.GetText("logMessages.whitelistTooManyEntries", paths.Count));
+                                return;
                             }
                             
-                            // 拒绝 UNC 路径，防止网络共享路径注入
-                            if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+                            foreach (var path in paths)
                             {
-                                LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectUncPath", normalized));
-                                continue;
+                                if (string.IsNullOrEmpty(path)) continue;
+                                try
+                                {
+                                    string normalized = Path.GetFullPath(path);
+                                    
+                                    // 拒绝扩展长度路径前缀，防止路径绕过攻击
+                                    if (normalized.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectExtendedPath", normalized));
+                                        continue;
+                                    }
+                                    
+                                    // 拒绝 UNC 路径，防止网络共享路径注入
+                                    if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectUncPath", normalized));
+                                        continue;
+                                    }
+                                    
+                                    newCache.Add(normalized);
+                                }
+                                catch
+                                {
+                                    // 无法规范化的路径不加入缓存
+                                    LogManager.Warning(LangManager.GetText("logMessages.whitelistInvalidPath", path));
+                                }
                             }
-                            
-                            newCache.Add(normalized);
-                        }
-                        catch
-                        {
-                            // 无法规范化的路径不加入缓存
-                            LogManager.Warning(LangManager.GetText("logMessages.whitelistInvalidPath", path));
                         }
                     }
                 }
 
+                // 使用 copy-on-write 模式：先构建新缓存，再原子替换引用
+                // 锁只保护替换操作，不保护读取，减少锁竞争
                 lock (whitelistLock)
                 {
                     whitelistCache = newCache;
                     whitelistCacheLoaded = true;
                 }
 
-                LogManager.Info(LangManager.GetText("logMessages.whitelistCacheRefreshedManual", whitelistCache.Count));
+                LogManager.Info(LangManager.GetText("logMessages.whitelistCacheRefreshedManual", newCache.Count));
             }
             catch (Exception ex)
             {

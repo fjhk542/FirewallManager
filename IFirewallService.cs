@@ -64,12 +64,34 @@ namespace FirewallManager
         /// </summary>
         /// <param name="ruleName">规则名称</param>
         /// <returns>规则对象，如果不存在则返回 null</returns>
-        dynamic GetRuleDetails(string ruleName);
+        RuleDetailsInfo GetRuleDetails(string ruleName);
+        bool UpdateRule(string ruleName, string description, bool enabled, int direction, int action);
 
         /// <summary>
         /// 获取所有由本程序创建的规则名称
         /// </summary>
         /// <returns>规则名称列表</returns>
         List<string> GetAllRuleNames();
+
+        /// <summary>
+        /// 移除指定文件夹的防火墙规则
+        /// </summary>
+        /// <param name="folderPath">文件夹路径</param>
+        /// <returns>删除的规则数量</returns>
+        int RemoveFolderRules(string folderPath);
+
+        /// <summary>
+        /// 生成文件路径的哈希值
+        /// </summary>
+        /// <param name="path">文件路径</param>
+        /// <returns>路径的哈希值</returns>
+        string GetPathHash(string path);
+
+        /// <summary>
+        /// 清理规则名称中的不安全字符
+        /// </summary>
+        /// <param name="input">输入字符串</param>
+        /// <returns>清理后的规则名称</returns>
+        string SanitizeRuleName(string input);
     }
 }

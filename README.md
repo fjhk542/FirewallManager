@@ -38,6 +38,17 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
 - 多语言支持，包括中文和英文
 - 托盘菜单更新规则功能，无需打开主窗口
 
+### 5. 安全特性
+- **配置文件完整性保护**: 使用 HMAC-SHA256 校验配置文件完整性，防止篡改
+- **HMAC 密钥加密**: 使用 Windows DPAPI 加密存储 HMAC 密钥，防止密钥泄露
+- **安全文件权限**: HMAC 密钥文件仅允许 Administrators 和 SYSTEM 账户访问
+- **安全确认对话框**: 修改规则 Action/Direction 时要求用户确认
+- **路径安全验证**: 拒绝符号链接、NTFS Junction 点、扩展长度路径和 UNC 路径
+- **TOCTOU 防护**: 文件系统操作添加等待机制，防止竞态条件攻击
+- **日志安全**: 控制字符过滤、敏感信息脱敏、频率限制
+- **COM 对象安全**: 类型验证和安全属性访问，防止 COM 对象劫持
+- **规则应用到所有配置文件**: 防火墙规则应用到 Domain、Private 和 Public 所有配置文件
+
 ## 系统要求
 
 - 操作系统：Windows 10/11
@@ -329,6 +340,20 @@ dotnet test
 - 日志记录功能可以帮助调试问题
 
 ## 版本历史
+
+### v1.7.0
+
+- **安全加固**: 进一步安全漏洞修复，修复 9 个安全漏洞（1 高危、3 中危、5 低危）
+- **HMAC 密钥加密**: 使用 Windows DPAPI (ProtectedData.Protect) 加密存储 HMAC 密钥
+- **安全文件权限**: 使用 SetSecureFilePermissions() 限制 HMAC 密钥文件仅允许 Administrators 和 SYSTEM 访问
+- **安全确认对话框**: 修改规则 Action/Direction 时要求用户确认，防止误操作
+- **异步超时处理**: 关键操作使用 async/await + Task.WhenAny 实现超时控制，防止 UI 阻塞
+- **Junction 点检测**: 添加 IsJunction() 方法检测 NTFS 重解析点（tag 0xA0000003）
+- **COM 对象验证增强**: 使用 IsAssignableFrom() 和 GUID 比较替代直接类型相等检查
+- **规则应用到所有配置文件**: 修正 ALL_FIREWALL_PROFILES 为 7，确保规则应用到 Domain+Private+Public
+- **规则删除完整性**: 删除文件夹时同步删除关联的防火墙规则
+- **原子写操作改进**: 添加 try-finally 块确保临时文件清理
+- **更新项目版本号到 1.7.0**
 
 ### v1.6.0
 

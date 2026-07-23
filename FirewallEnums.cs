@@ -19,27 +19,6 @@ namespace FirewallManager
     }
 
     /// <summary>
-    /// 防火墙协议枚举
-    /// </summary>
-    public enum FirewallProtocol
-    {
-        /// <summary>
-        /// 所有协议
-        /// </summary>
-        Any = 256,
-        
-        /// <summary>
-        /// TCP协议
-        /// </summary>
-        Tcp = 6,
-        
-        /// <summary>
-        /// UDP协议
-        /// </summary>
-        Udp = 17
-    }
-
-    /// <summary>
     /// 防火墙方向枚举
     /// </summary>
     public enum FirewallDirection

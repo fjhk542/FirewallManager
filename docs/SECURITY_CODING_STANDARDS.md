@@ -81,6 +81,12 @@ string name = SafeGetProperty<string>(rule, "Name", "");
 ### 5.2 密钥管理
 - HMAC 密钥从 MachineGuid 派生，不同机器使用不同密钥
 - 不硬编码密钥
+- HMAC 密钥必须使用 Windows DPAPI (`ProtectedData.Protect`) 加密存储
+- 加密时添加随机熵值增强安全性
+
+### 5.3 安全文件权限
+- HMAC 密钥文件必须设置安全 ACL，仅允许 Administrators 和 SYSTEM 账户访问
+- 使用 `SetSecureFilePermissions()` 方法设置文件权限
 
 ## 6. 竞争条件防护
 
@@ -124,7 +130,24 @@ string name = SafeGetProperty<string>(rule, "Name", "");
 - 单个日志文件最大 10MB
 - 超过限制时自动清理，保留最新 5000 行
 
-## 10. 调试安全
+### 9.3 原子写操作
+所有配置文件写入必须使用原子写操作（`AtomicWriteAllText`、`AtomicWriteAllBytes`），并确保：
+- 添加 `try-finally` 块确保临时文件清理
+- 无论操作成功或失败，临时文件都被清理
+
+## 10. 用户确认对话框
+
+### 10.1 关键操作确认
+修改防火墙规则的以下属性时必须显示安全确认对话框：
+- Action（允许/阻止）
+- Direction（入站/出站）
+
+确认对话框必须包含：
+- 详细的操作信息
+- 风险提示
+- 明确的确认/取消按钮
+
+## 11. 调试安全
 
 - 所有调试输出方法添加 `[Conditional("DEBUG")]` 属性
 - Release 版本不包含调试输出

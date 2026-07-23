@@ -5,17 +5,21 @@ namespace FirewallManager
 {
     public partial class RuleDetailsForm : Form
     {
-        private dynamic firewallRule;
+        private RuleDetailsInfo ruleInfo;
+        private IFirewallService firewallService;
         private string ruleName;
+        private int originalDirection;
+        private int originalAction;
+        private bool originalEnabled;
         
         /// <summary>
         /// 构造函数
         /// </summary>
-        /// <param name="rule">防火墙规则对象</param>
+        /// <param name="rule">防火墙规则信息</param>
         /// <param name="name">规则名称</param>
-        public RuleDetailsForm(dynamic rule, string name)
+        /// <param name="service">防火墙服务</param>
+        public RuleDetailsForm(RuleDetailsInfo rule, string name, IFirewallService service)
         {
-            // 验证参数
             if (rule == null)
             {
                 throw new ArgumentNullException(nameof(rule), LangManager.GetText("messages.ruleCannotBeNull"));
@@ -26,9 +30,15 @@ namespace FirewallManager
                 throw new ArgumentNullException(nameof(name), LangManager.GetText("messages.ruleNameCannotBeNull"));
             }
             
+            if (service == null)
+            {
+                throw new ArgumentNullException(nameof(service));
+            }
+            
             InitializeComponent();
-            firewallRule = rule;
+            ruleInfo = rule;
             ruleName = name;
+            firewallService = service;
             
             // 覆盖设计器生成的硬编码文本
             this.Text = LangManager.GetText("form.ruleDetails.title");
@@ -66,16 +76,20 @@ namespace FirewallManager
         {
             try
             {
-                // 安全访问 dynamic 对象的属性
                 txtRuleName.Text = ruleName ?? string.Empty;
-                txtDescription.Text = ComHelper.SafeGetProperty<string>(firewallRule, "Description", string.Empty);
-                txtApplicationName.Text = ComHelper.SafeGetProperty<string>(firewallRule, "ApplicationName", string.Empty);
-                chkEnabled.Checked = ComHelper.SafeGetProperty<bool>(firewallRule, "Enabled", true);
+                txtDescription.Text = ruleInfo.Description ?? string.Empty;
+                txtApplicationName.Text = ruleInfo.ApplicationName ?? string.Empty;
 
-                int direction = ComHelper.SafeGetProperty<int>(firewallRule, "Direction", 2);
+                bool enabledValue = ruleInfo.Enabled;
+                chkEnabled.Checked = enabledValue;
+                originalEnabled = enabledValue;
+
+                int direction = ruleInfo.Direction;
+                originalDirection = direction;
                 cmbDirection.SelectedIndex = direction == 1 ? 0 : 1;
 
-                int action = ComHelper.SafeGetProperty<int>(firewallRule, "Action", 0);
+                int action = ruleInfo.Action;
+                originalAction = action;
                 cmbAction.SelectedIndex = action;
             }
             catch (Exception ex)
@@ -94,15 +108,59 @@ namespace FirewallManager
         {
             try
             {
-                ComHelper.SafeSetProperty(firewallRule, "Name", txtRuleName.Text);
-                ComHelper.SafeSetProperty(firewallRule, "Description", txtDescription.Text);
-                ComHelper.SafeSetProperty(firewallRule, "Enabled", chkEnabled.Checked);
-                ComHelper.SafeSetProperty(firewallRule, "Direction", cmbDirection.SelectedIndex == 0 ? 1 : 2);
-                ComHelper.SafeSetProperty(firewallRule, "Action", cmbAction.SelectedIndex);
+                int newDirection = cmbDirection.SelectedIndex == 0 ? 1 : 2;
+                int newAction = cmbAction.SelectedIndex;
 
-                LogManager.Info(LangManager.GetText("logMessages.updateRule", txtRuleName.Text));
-                MessageBox.Show(LangManager.GetText("messages.ruleUpdated"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
-                this.Close();
+                bool directionChanged = newDirection != originalDirection;
+                bool actionChanged = newAction != originalAction;
+
+                if (directionChanged || actionChanged)
+                {
+                    string warningMessage = string.Empty;
+                    if (actionChanged && newAction == 1)
+                    {
+                        warningMessage += LangManager.GetText("messages.ruleActionAllowWarning") + Environment.NewLine;
+                    }
+                    if (directionChanged && newDirection == 1)
+                    {
+                        warningMessage += LangManager.GetText("messages.ruleDirectionInboundWarning") + Environment.NewLine;
+                    }
+                    if (directionChanged || actionChanged)
+                    {
+                        warningMessage += LangManager.GetText("messages.ruleChangeConfirm");
+                    }
+
+                    if (!string.IsNullOrEmpty(warningMessage))
+                    {
+                        var result = MessageBox.Show(
+                            warningMessage,
+                            LangManager.GetText("messages.securityWarningTitle"),
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning);
+                        if (result != DialogResult.Yes)
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                bool success = firewallService.UpdateRule(
+                    ruleName,
+                    txtDescription.Text,
+                    chkEnabled.Checked,
+                    newDirection,
+                    newAction);
+
+                if (success)
+                {
+                    LogManager.Info(LangManager.GetText("logMessages.updateRule", ruleName));
+                    MessageBox.Show(LangManager.GetText("messages.ruleUpdated"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    this.Close();
+                }
+                else
+                {
+                    MessageBox.Show(LangManager.GetText("messages.saveRuleFailed"), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
             catch (Exception ex)
             {

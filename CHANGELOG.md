@@ -5,6 +5,69 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 此项目遵循 [语义化版本控制](https://semver.org/lang/zh-CN/)。
 
+## [1.8.0] - 2026-07-23
+
+### 新增
+- 添加 `WinVerifyTrust` API 调用，验证文件签名完整性（不仅仅是证书链）
+- 添加 `VerifyConfigIntegrityAndRead` 方法，原子操作验证配置文件完整性并读取内容
+- 添加 `Win32Native` 静态类，封装 Windows API 调用（`CreateFile`, `WinVerifyTrust` 等）
+
+### 修改
+- 更新 `IsFileDigitallySigned` 方法，先验证签名完整性再验证证书链
+- 更新 `ValidateComObjectType` 方法，改用 CLSID/IID 验证，移除 ProgID 依赖
+- 更新 `HasDangerousReparseTag` 方法，使用 `CreateFile` API 打开目录并添加 `FILE_FLAG_BACKUP_SEMANTICS` 标志
+- 更新 `UpdateRule` 和 `DeleteRule` 方法，添加规则名称验证（空检查 + 长度限制 256 字符）
+- 更新 `GetRuleDetails` 方法，使用 CLSID/IID 验证 COM 对象类型
+- 更新 `Form1.cs` 和 `WhitelistForm.cs`，使用新的 `VerifyConfigIntegrityAndRead` 方法防止 TOCTOU 攻击
+
+### 高危漏洞修复
+- **Authenticode 签名验证不完整 (H-006)**: 添加 `WinVerifyTrust` API 验证文件内容与签名匹配，防止篡改攻击
+- **COM 对象验证 ProgID 劫持 (H-007)**: 修改 `ValidateComObjectType` 使用 CLSID/IID 验证，防止 ProgID 劫持绕过 COM 安全模型
+- **配置文件 TOCTOU 竞态条件 (H-008)**: 添加 `VerifyConfigIntegrityAndRead` 方法，在锁定状态下完成验证和读取
+
+### 中危漏洞修复
+- **规则名称验证不一致 (M-008)**: 在 `UpdateRule` 和 `DeleteRule` 中添加与 `GetRuleDetails` 一致的规则名称验证
+- **目录打开缺少 FILE_FLAG_BACKUP_SEMANTICS (M-009)**: 使用 `CreateFile` API 打开目录并设置必要标志
+
+### 低危漏洞修复
+- **多语言支持增强**: 添加 `signatureIntegrityCheckFailed` 日志消息
+
+## [1.7.0] - 2026-06-30
+
+### 新增
+- 添加 HMAC 密钥加密功能，使用 Windows DPAPI (ProtectedData.Protect) 加密 HMAC 密钥
+- 添加安全确认对话框，修改防火墙规则 Action/Direction 时要求用户确认
+- 添加异步操作超时处理，使用 Task.WhenAny 防止 UI 阻塞
+- 添加 HMAC 密钥文件安全 ACL，仅允许 Administrators 和 SYSTEM 账户访问
+- 添加 NTFS Junction 点检测方法 (IsJunction)，使用 DeviceIoControl 检测重解析点
+- 添加 ALL_FIREWALL_PROFILES 常量，设置为 7 使规则应用到所有配置文件（Domain+Private+Public）
+- 添加 FileSystemWatcher_Created 事件中 .exe 扩展名验证
+- 添加 removeFolderButton_Click 中 RemoveFolderRules 调用，删除文件夹时同步删除关联规则
+
+### 修改
+- 增强 COM 对象验证，使用 IsAssignableFrom() 和 GUID 比较替代直接类型相等检查
+- 改进原子写操作 (AtomicWriteAllText/AtomicWriteAllBytes)，添加 try-finally 清理临时文件
+- 更新 Config.VerifyConfigIntegrity() 返回 false 处理不存在的文件
+- 更新 ComHelper.AtomicWriteAllText() 处理不存在的文件使用 File.Move
+- 更新 FirewallService，在创建 FirewallPolicy 和 FirewallRule COM 对象后调用 ValidateComObjectType()
+- 更新 Form1.cs，在配置加载和保存时调用 VerifyConfigIntegrity() 和 SaveConfigIntegrityHash()
+- 更新 LangManager，添加 6 个新的安全相关消息键
+
+### 高危漏洞修复
+- **ALL_FIREWALL_PROFILES 配置错误 (H-005)**: 修正 ALL_FIREWALL_PROFILES 从 2 改为 7，确保规则应用到所有防火墙配置文件
+
+### 中危漏洞修复
+- **HMAC 密钥明文存储风险 (M-005)**: 使用 Windows DPAPI 加密存储 HMAC 密钥，防止密钥泄露
+- **关键操作缺乏用户确认 (M-006)**: 规则 Action/Direction 变更时显示安全确认对话框，防止误操作
+- **UI 阻塞操作缺乏超时处理 (M-007)**: 关键操作使用 async/await + Task.WhenAny 实现超时控制
+
+### 低危漏洞修复
+- **COM 对象验证不足 (L-006)**: 使用 IsAssignableFrom() 和 GUID 比较增强 COM 对象类型验证
+- **原子写操作资源泄漏 (L-007)**: 添加 try-finally 块确保临时文件清理
+- **HMAC 密钥文件权限过宽 (L-008)**: 使用 SetSecureFilePermissions() 限制文件访问权限
+- **Junction 点检测缺失 (L-009)**: 添加 IsJunction() 方法检测 NTFS 重解析点
+- **规则删除不完整 (L-010)**: 删除文件夹时同步删除关联的防火墙规则
+
 ## [1.6.0] - 2026-05-22
 
 ### 新增

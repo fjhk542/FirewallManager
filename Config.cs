@@ -6,10 +6,6 @@ using System.Security.Cryptography;
 
 namespace FirewallManager
 {
-    /// <summary>
-    /// 配置类
-    /// 包含应用程序的所有配置常量和配置相关方法
-    /// </summary>
     public static class Config
     {
         /// <summary>
@@ -53,9 +49,30 @@ namespace FirewallManager
         public const string FIREWALL_RULE_PROGID = "HNetCfg.FWRule";
 
         /// <summary>
-        /// 所有防火墙配置文件
+        /// 防火墙策略CLSID（固定值，防止ProgID劫持）
         /// </summary>
-        public const int ALL_FIREWALL_PROFILES = 2;
+        public const string FIREWALL_POLICY_CLSID = "E2B3C97F-6AE1-41AC-874A-C6F4D9D163F7";
+
+        /// <summary>
+        /// 防火墙规则CLSID（固定值，防止ProgID劫持）
+        /// </summary>
+        public const string FIREWALL_RULE_CLSID = "2C5BC43E-3369-4C33-AB0C-BE9469677AF4";
+
+        /// <summary>
+        /// 防火墙策略接口IID
+        /// </summary>
+        public const string FIREWALL_POLICY_IID = "E2B3C97F-6AE1-41AC-874A-C6F4D9D163F7";
+
+        /// <summary>
+        /// 防火墙规则接口IID
+        /// </summary>
+        public const string FIREWALL_RULE_IID = "2C5BC43E-3369-4C33-AB0C-BE9469677AF4";
+
+        /// <summary>
+        /// 所有防火墙配置文件
+        /// Domain(1) | Private(2) | Public(4) = 7
+        /// </summary>
+        public const int ALL_FIREWALL_PROFILES = 7;
 
         /// <summary>
         /// 应用程序数据目录名称
@@ -73,9 +90,24 @@ namespace FirewallManager
         private const string INTEGRITY_FILE_EXT = ".hmac";
 
         /// <summary>
+        /// HMAC 密钥文件名（DPAPI 加密存储）
+        /// </summary>
+        private const string HMAC_KEY_FILE = "hmac.key";
+
+        /// <summary>
         /// 用于派生 HMAC 密钥的固定标记
         /// </summary>
         private const string HMAC_KEY_TAG = "FirewallManager_Config_Integrity_v1";
+
+        /// <summary>
+        /// 缓存的 HMAC 密钥（延迟初始化）
+        /// </summary>
+        private static byte[] _cachedHmacKey;
+
+        /// <summary>
+        /// HMAC 密钥缓存锁
+        /// </summary>
+        private static readonly object _hmacKeyLock = new object();
 
         /// <summary>
         /// 关键程序集合（HashSet实现O(1)查找）
@@ -110,10 +142,67 @@ namespace FirewallManager
 
         /// <summary>
         /// 生成机器特定的 HMAC 密钥
-        /// 使用 MachineGuid 作为密钥基础，确保密钥在不同机器上不同
+        /// 使用 DPAPI 加密存储密钥，防止本地攻击者重建密钥
         /// </summary>
         /// <returns>HMAC 密钥字节数组</returns>
         private static byte[] GenerateHmacKey()
+        {
+            lock (_hmacKeyLock)
+            {
+                if (_cachedHmacKey != null)
+                {
+                    return (byte[])_cachedHmacKey.Clone();
+                }
+
+                string keyFilePath = GetAppDataFilePath(HMAC_KEY_FILE);
+
+                try
+                {
+                    if (File.Exists(keyFilePath))
+                    {
+                        using (var fs = File.Open(keyFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+                        {
+                            byte[] encryptedKey = new byte[fs.Length];
+                            fs.Read(encryptedKey, 0, encryptedKey.Length);
+                            byte[] decryptedKey = ProtectedData.Unprotect(encryptedKey, null, DataProtectionScope.CurrentUser);
+                            if (decryptedKey != null && decryptedKey.Length >= 32)
+                            {
+                                _cachedHmacKey = decryptedKey;
+                                return (byte[])_cachedHmacKey.Clone();
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // 密钥文件读取或解密失败，生成新密钥
+                }
+
+                byte[] newKey = GenerateNewHmacKey();
+
+                try
+                {
+                    byte[] encryptedKey = ProtectedData.Protect(newKey, null, DataProtectionScope.CurrentUser);
+                    ComHelper.AtomicWriteAllBytes(keyFilePath, encryptedKey);
+                    SetSecureFilePermissions(keyFilePath);
+                    LogManager.Info(LangManager.GetText("logMessages.hmacKeyGenerated"));
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.hmacKeySaveFailed", ex.Message));
+                }
+
+                _cachedHmacKey = newKey;
+                return (byte[])_cachedHmacKey.Clone();
+            }
+        }
+
+        /// <summary>
+        /// 生成新的 HMAC 密钥
+        /// 使用 MachineGuid + 随机熵 + 硬编码标记 通过 SHA256 派生
+        /// </summary>
+        /// <returns>HMAC 密钥字节数组</returns>
+        private static byte[] GenerateNewHmacKey()
         {
             try
             {
@@ -132,17 +221,27 @@ namespace FirewallManager
                     // 无法读取 MachineGuid 时使用默认标记
                 }
 
+                byte[] randomEntropy = new byte[32];
+                using (var rng = RandomNumberGenerator.Create())
+                {
+                    rng.GetBytes(randomEntropy);
+                }
+
                 using (var sha256 = SHA256.Create())
                 {
-                    return sha256.ComputeHash(Encoding.UTF8.GetBytes(machineKey));
+                    byte[] keyMaterial = new byte[Encoding.UTF8.GetByteCount(machineKey) + randomEntropy.Length];
+                    Buffer.BlockCopy(Encoding.UTF8.GetBytes(machineKey), 0, keyMaterial, 0, Encoding.UTF8.GetByteCount(machineKey));
+                    Buffer.BlockCopy(randomEntropy, 0, keyMaterial, Encoding.UTF8.GetByteCount(machineKey), randomEntropy.Length);
+                    return sha256.ComputeHash(keyMaterial);
                 }
             }
             catch
             {
-                // 密钥生成失败时使用回退密钥
-                using (var sha256 = SHA256.Create())
+                using (var rng = RandomNumberGenerator.Create())
                 {
-                    return sha256.ComputeHash(Encoding.UTF8.GetBytes(HMAC_KEY_TAG));
+                    byte[] fallbackKey = new byte[32];
+                    rng.GetBytes(fallbackKey);
+                    return fallbackKey;
                 }
             }
         }
@@ -221,40 +320,132 @@ namespace FirewallManager
         /// </summary>
         /// <param name="configFilePath">配置文件路径</param>
         /// <returns>
-        /// true: 完整性验证通过或无法验证（无校验文件时视为通过）
-        /// false: 完整性验证失败
+        /// true: 完整性验证通过
+        /// false: 完整性验证失败或校验文件缺失（出于安全考虑）
         /// </returns>
         public static bool VerifyConfigIntegrity(string configFilePath)
         {
+            string content;
+            return VerifyConfigIntegrityAndRead(configFilePath, out content);
+        }
+
+        /// <summary>
+        /// 验证配置文件的完整性并读取内容（原子操作，防止TOCTOU攻击）
+        /// 在锁定状态下完成验证和读取，确保验证的内容与读取的内容一致
+        /// </summary>
+        /// <param name="configFilePath">配置文件路径</param>
+        /// <param name="content">输出参数：验证通过后的文件内容</param>
+        /// <returns>
+        /// true: 完整性验证通过，content包含文件内容
+        /// false: 完整性验证失败或校验文件缺失（出于安全考虑）
+        /// </returns>
+        public static bool VerifyConfigIntegrityAndRead(string configFilePath, out string content)
+        {
+            content = null;
             try
             {
+                if (!File.Exists(configFilePath))
+                {
+                    return false;
+                }
+
                 string integrityFilePath = GetIntegrityFilePath(configFilePath);
 
-                // 如果校验文件不存在，视为首次运行或升级场景，创建校验文件后返回通过
+                // 如果校验文件不存在，拒绝加载（防止攻击者删除校验文件绕过验证）
                 if (!File.Exists(integrityFilePath))
                 {
-                    SaveConfigIntegrityHash(configFilePath);
-                    return true;
-                }
-
-                string savedHash = File.ReadAllText(integrityFilePath, Encoding.UTF8)?.Trim();
-                if (string.IsNullOrEmpty(savedHash))
-                {
+                    LogManager.Error(LangManager.GetText("logMessages.configIntegrityFileMissing", configFilePath));
                     return false;
                 }
 
-                string computedHash = ComputeFileIntegrityHash(configFilePath);
-                if (computedHash == null)
+                // 使用文件锁定防止TOCTOU攻击
+                using (var fs = File.Open(integrityFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                 {
-                    return false;
-                }
+                    using (var reader = new StreamReader(fs, Encoding.UTF8))
+                    {
+                        string savedHash = reader.ReadToEnd()?.Trim();
+                        if (string.IsNullOrEmpty(savedHash))
+                        {
+                            return false;
+                        }
 
-                return string.Equals(savedHash, computedHash, StringComparison.OrdinalIgnoreCase);
+                        // 使用文件锁定读取配置文件
+                        using (var configFs = File.Open(configFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+                        {
+                            byte[] configBytes = new byte[configFs.Length];
+                            configFs.Read(configBytes, 0, configBytes.Length);
+
+                            byte[] key = GenerateHmacKey();
+                            using (var hmac = new HMACSHA256(key))
+                            {
+                                byte[] hashBytes = hmac.ComputeHash(configBytes);
+                                StringBuilder sb = new StringBuilder(hashBytes.Length * 2);
+                                foreach (byte b in hashBytes)
+                                {
+                                    sb.Append(b.ToString("x2"));
+                                }
+                                string computedHash = sb.ToString();
+
+                                if (!string.Equals(savedHash, computedHash, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return false;
+                                }
+
+                                // 验证通过后才返回内容，确保没有TOCTOU窗口
+                                content = Encoding.UTF8.GetString(configBytes);
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
             catch
             {
                 // 验证失败时出于安全考虑返回 false
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 为敏感配置文件设置受限ACL权限（仅管理员和SYSTEM可访问）
+        /// 防止低权限用户篡改白名单、配置等关键文件
+        /// </summary>
+        /// <param name="filePath">要保护的文件路径</param>
+        public static void SetSecureFilePermissionsPublic(string filePath)
+        {
+            SetSecureFilePermissions(filePath);
+        }
+
+        private static void SetSecureFilePermissions(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                    return;
+
+                var fileInfo = new FileInfo(filePath);
+                System.Security.AccessControl.FileSecurity fileSecurity = fileInfo.GetAccessControl();
+                fileSecurity.SetAccessRuleProtection(true, false);
+
+                System.Security.Principal.SecurityIdentifier adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                System.Security.AccessControl.FileSystemAccessRule adminRule = new System.Security.AccessControl.FileSystemAccessRule(
+                    adminSid,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow);
+                fileSecurity.AddAccessRule(adminRule);
+
+                System.Security.Principal.SecurityIdentifier systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                System.Security.AccessControl.FileSystemAccessRule systemRule = new System.Security.AccessControl.FileSystemAccessRule(
+                    systemSid,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow);
+                fileSecurity.AddAccessRule(systemRule);
+
+                fileInfo.SetAccessControl(fileSecurity);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warning(LangManager.GetText("logMessages.setFilePermissionsFailed", ex.Message));
             }
         }
     }

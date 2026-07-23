@@ -169,6 +169,7 @@
     "disposeError": "Error when releasing resources",
     "removingFolderRules": "When deleting folder {0}, found {1} executable files, preparing to clean up corresponding rules",
     "removingFolderRulesCompleted": "Cleanup completed, deleted firewall rules for all executable files under folder {0}",
+    "removedFolderRules": "Removed {1} rules for folder: {0}",
     "removingFolderRulesFailed": "Failed to clean up folder rules: {0}",
     "clearingAllRules": "Starting to clear all firewall rules",
     "preparingClearRules": "Preparing to clear {0} firewall rules",
@@ -281,7 +282,10 @@
     "logManager.sensitiveInfo": "Sensitive information",
     "logManager.messageTruncated2": "Message truncated",
     "applicationExiting": "Application exiting, resource cleanup completed",
-    "exitCleanupFailed": "Failed to clean up resources on exit"
+    "exitCleanupFailed": "Failed to clean up resources on exit",
+    "certificateOnlineRevocationCheckFailed": "Online certificate revocation check failed: {0}",
+    "certificateOfflineRevocationCheckFailed": "Offline certificate revocation check failed: {0}",
+    "signatureIntegrityCheckFailed": "Signature integrity check failed: {0}"
   },
   "forms": {
     "logsForm": "Firewall Manager Logs",

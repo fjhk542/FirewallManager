@@ -164,21 +164,34 @@ namespace FirewallManager
             }
         }
         
+        private const int _maxJsonDepth = 10;
+
         /// <summary>
-        /// 递归处理 JSON 节点
+        /// 递归处理 JSON 节点（带深度限制）
         /// </summary>
         /// <param name="element">JSON 元素</param>
         /// <param name="prefix">当前路径前缀</param>
         /// <param name="translations">翻译字典</param>
         private static void ProcessJsonNode(JsonElement element, string prefix, Dictionary<string, string> translations)
         {
+            ProcessJsonNode(element, prefix, translations, 0);
+        }
+
+        private static void ProcessJsonNode(JsonElement element, string prefix, Dictionary<string, string> translations, int depth)
+        {
+            if (depth >= _maxJsonDepth)
+            {
+                LogManager.Warning(LangManager.GetText("logMessages.jsonDepthExceeded"));
+                return;
+            }
+
             switch (element.ValueKind)
             {
                 case JsonValueKind.Object:
                     foreach (var property in element.EnumerateObject())
                     {
                         string newPrefix = string.IsNullOrEmpty(prefix) ? property.Name : $"{prefix}.{property.Name}";
-                        ProcessJsonNode(property.Value, newPrefix, translations);
+                        ProcessJsonNode(property.Value, newPrefix, translations, depth + 1);
                     }
                     break;
                 case JsonValueKind.String:
@@ -330,20 +343,23 @@ namespace FirewallManager
                 string text = GetTextInternal(key);
                 if (!string.IsNullOrEmpty(text) && args != null && args.Length > 0)
                 {
-                    // 检查文本是否包含格式化占位符，防止格式化字符串攻击
-                    // Check if text contains format placeholders to prevent format string attacks
                     int placeholderCount = System.Text.RegularExpressions.Regex.Matches(text, @"\{\d+\}").Count;
-                    if (placeholderCount > 0 && placeholderCount <= args.Length)
+                    if (placeholderCount > 0)
                     {
-                        return string.Format(text, args);
-                    }
-                    else if (placeholderCount == 0)
-                    {
-                        return text;
-                    }
-                    else
-                    {
-                        return text;
+                        if (placeholderCount <= args.Length)
+                        {
+                            return string.Format(text, args);
+                        }
+                        else
+                        {
+                            object[] extendedArgs = new object[placeholderCount];
+                            Array.Copy(args, extendedArgs, args.Length);
+                            for (int i = args.Length; i < placeholderCount; i++)
+                            {
+                                extendedArgs[i] = string.Empty;
+                            }
+                            return string.Format(text, extendedArgs);
+                        }
                     }
                 }
                 return text;
@@ -393,8 +409,12 @@ namespace FirewallManager
             { "logMessages.invalidCallerDetected", "Invalid caller detected for path: {0}" },
             { "logMessages.fileNotReadyAfterRetries", "File not ready after retries: {0}" },
             { "logMessages.fileDisappearedBeforeProcessing", "File disappeared before processing: {0}" },
+            { "logMessages.fileChanged", "File changed: {0}" },
+            { "logMessages.processFileChangedEventFailed", "Failed to process file changed event" },
             { "logMessages.rejectSymbolicLinkFile", "Rejected symbolic link file: {0}" },
             { "logMessages.rejectExtendedLengthPath", "Rejected extended-length path: {0}" },
+            { "logMessages.pathTooLong", "Path too long, skipping: {0}..." },
+            { "logMessages.jsonDepthExceeded", "JSON parsing depth exceeded maximum limit" },
             { "logMessages.processFileCreatedEventFailed", "Failed to process file created event" },
             { "logMessages.logWriteFailed", "Failed to write log: {0}" },
             { "logMessages.stackTrace", "Stack trace: {0}" },
@@ -432,6 +452,7 @@ namespace FirewallManager
             { "logMessages.scanFolderFailed", "Failed to scan folder {0}: {1}" },
             { "logMessages.removingFolderRules", "Removing rules for folder: {0} ({1} files)" },
             { "logMessages.removingFolderRulesCompleted", "Completed removing rules for folder: {0}" },
+            { "logMessages.removedFolderRules", "Removed {1} rules for folder: {0}" },
             { "logMessages.removingFolderRulesFailed", "Failed to remove folder rules: {0}" },
             { "logMessages.processFileFailed", "Failed to process file: {0}" },
             { "logMessages.getRuleDetailsFailed", "Failed to get rule details: {0}" },
@@ -439,11 +460,47 @@ namespace FirewallManager
             { "logMessages.firewallPolicyTypeNotFound", "Firewall policy COM type not found" },
             { "logMessages.foundType", "Found type: {0}" },
             { "logMessages.firewallPolicyInstanceCreated", "Firewall policy instance created" },
+            { "logMessages.firewallPolicyTypeValidationFailed", "Firewall policy COM object type validation failed" },
+            { "logMessages.firewallRuleTypeValidationFailed", "Firewall rule COM object type validation failed" },
+            { "logMessages.configIntegrityVerificationFailed", "Configuration file integrity verification failed" },
+            { "logMessages.configIntegrityHashSaved", "Configuration file integrity hash saved" },
+            { "logMessages.configIntegrityHashSaveFailed", "Failed to save configuration file integrity hash" },
+            { "logMessages.hmacKeyGenerated", "HMAC key generated and saved with DPAPI protection" },
+            { "logMessages.hmacKeySaveFailed", "Failed to save HMAC key: {0}" },
+            { "messages.configIntegrityVerificationFailed", "Configuration file may have been tampered. Loading aborted for security." },
+            { "messages.securityWarningTitle", "Security Warning" },
+            { "messages.ruleActionAllowWarning", "WARNING: Changing rule action to Allow will permit the application to make network connections." },
+            { "messages.ruleDirectionInboundWarning", "WARNING: Changing rule direction to Inbound will allow incoming connections to this application." },
+            { "messages.ruleChangeConfirm", "Are you sure you want to make this change?" },
+            { "messages.ruleNotFound", "Rule not found." },
+            { "messages.selectExeToViewDetails", "Please select an EXE file to view rule details." },
+            { "messages.informationTitle", "Information" },
+            { "menu.viewRuleDetails", "View Rule Details" },
+            { "messages.languageChangeFailed", "Failed to change language." },
+            { "messages.logContentTruncated", "[Log content truncated]" },
             { "logMessages.tryCreateFirewallPolicyObject", "Attempting to create firewall policy object: {0}" },
             { "logMessages.deleteWhitelistAppRule", "Deleted whitelist app rule: {0}" },
             { "logMessages.deleteWhitelistAppRuleFailed", "Failed to delete whitelist app rule {0}: {1}" },
+            { "logMessages.stopTaskTimeout", "Stop operation timed out after 5 seconds" },
+            { "logMessages.stopTaskFailed", "Failed to stop task: {0}" },
+            { "logMessages.safeSetPropertyFailed", "Failed to set COM property '{0}': {1}" },
+            { "logMessages.releaseComObjectFailed", "Failed to release COM object: {0}" },
+            { "logMessages.readRuleNameFailed", "Failed to read rule name: {0}" },
+            { "logMessages.safeGetPropertyFailed", "Failed to get COM property '{0}': {1}" },
+            { "logMessages.invalidGuidForComObject", "Invalid GUID for COM object: {0}" },
+            { "logMessages.clsidTypeNotFound", "CLSID type not found: {0}" },
+            { "logMessages.createComObjectFailed", "Failed to create COM object: {0}" },
+            { "logMessages.comObjectValidationFailed", "COM object validation failed: {0}" },
+            { "logMessages.createComObjectException", "Exception creating COM object {0}: {1}" },
+            { "logMessages.comObjectClsidMismatch", "COM object CLSID mismatch: got {0}, expected {1}" },
+            { "logMessages.comObjectIidMismatch", "COM object IID mismatch for {0}" },
+            { "logMessages.comObjectQueryInterfaceFailed", "COM object QueryInterface failed: {0}" },
+            { "logMessages.comObjectValidationException", "COM object validation exception: {0}" },
+            { "logMessages.configIntegrityFileMissing", "Config integrity file missing for {0}, refusing to load" },
             { "logMessages.updatingRules", "Updating firewall rules..." },
             { "logMessages.whitelistFileChanged", "Whitelist file changed" },
+            { "logMessages.pathNormalizationFailed", "Failed to normalize path '{0}': {1}" },
+            { "logMessages.setFilePermissionsFailed", "Failed to set secure file permissions: {0}" },
         };
 
         /// <summary>

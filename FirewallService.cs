@@ -16,9 +16,9 @@ namespace FirewallManager
     public class FirewallService : IFirewallService
     {
         /// <summary>
-        /// 防火墙策略对象
+        /// 防火墙策略对象（使用 object 存储以支持 volatile，提供 dynamic 访问）
         /// </summary>
-        private dynamic firewallPolicy;
+        private volatile object _firewallPolicy;
 
         /// <summary>
         /// 已添加的规则列表
@@ -28,7 +28,21 @@ namespace FirewallManager
         /// <summary>
         /// 用于确保线程安全的锁对象
         /// </summary>
-        private object addedRulesLock;
+        private readonly object addedRulesLock;
+
+        /// <summary>
+        /// 资源释放标志（线程安全）
+        /// </summary>
+        private volatile bool _disposed;
+
+        /// <summary>
+        /// 获取 firewallPolicy 的 dynamic 视图（线程安全读取 _firewallPolicy）
+        /// </summary>
+        private dynamic firewallPolicy
+        {
+            get { return _firewallPolicy; }
+            set { _firewallPolicy = value; }
+        }
 
         /// <summary>
         /// 构造函数
@@ -52,7 +66,10 @@ namespace FirewallManager
                 {
                     Marshal.ReleaseComObject(obj);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.releaseComObjectFailed", ex.Message));
+                }
             }
         }
 
@@ -72,46 +89,62 @@ namespace FirewallManager
         /// <param name="disposing">是否释放托管资源</param>
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
+            // 使用 volatile 字段 + 锁定确保线程安全
+            if (_disposed)
             {
-                // 释放托管资源
-                if (addedRules != null)
+                return;
+            }
+
+            lock (addedRulesLock)
+            {
+                if (_disposed)
                 {
-                    addedRules.Clear();
+                    return;
                 }
 
-                // 释放COM对象（只在显式Dispose时释放，避免在析构函数中访问托管资源）
-                if (firewallPolicy != null)
+                if (disposing)
                 {
-                    try
+                    // 释放托管资源
+                    if (addedRules != null)
                     {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(firewallPolicy);
-                        firewallPolicy = null;
-                        LogManager.Info(LangManager.GetText("logMessages.firewallPolicyCOMObjectReleased"));
+                        addedRules.Clear();
                     }
-                    catch (Exception ex)
+
+                    // 释放COM对象（只在显式Dispose时释放，避免在析构函数中访问托管资源）
+                    if (_firewallPolicy != null)
                     {
-                        LogManager.Error(LangManager.GetText("logMessages.releaseFirewallPolicyCOMObjectFailed"), ex);
+                        try
+                        {
+                            System.Runtime.InteropServices.Marshal.ReleaseComObject(_firewallPolicy);
+                            _firewallPolicy = null;
+                            LogManager.Info(LangManager.GetText("logMessages.firewallPolicyCOMObjectReleased"));
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Error(LangManager.GetText("logMessages.releaseFirewallPolicyCOMObjectFailed"), ex);
+                        }
                     }
                 }
-            }
-            else
-            {
-                // 从析构函数调用时，只释放非托管资源（COM对象）
-                // 注意：此时不能访问托管资源（如 LogManager），因为它们可能已被 GC 回收
-                if (firewallPolicy != null)
+                else
                 {
-                    try
+                    // 从析构函数调用时，只释放非托管资源（COM对象）
+                    // 注意：此时不能访问托管资源（如 LogManager），因为它们可能已被 GC 回收
+                    if (_firewallPolicy != null)
                     {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(firewallPolicy);
-                        firewallPolicy = null;
-                    }
-                    catch
-                    {
-                        // 在析构函数中不能记录日志，因为 LogManager 可能已被回收
-                        // 静默忽略异常
+                        try
+                        {
+                            System.Runtime.InteropServices.Marshal.ReleaseComObject(_firewallPolicy);
+                            _firewallPolicy = null;
+                        }
+                        catch
+                        {
+                            // 在析构函数中不能记录日志，因为 LogManager 可能已被回收
+                            // 静默忽略异常
+                        }
                     }
                 }
+
+                _disposed = true;
             }
         }
 
@@ -135,17 +168,17 @@ namespace FirewallManager
                 LogManager.Info(LangManager.GetText("logMessages.startInitializeFirewallComponents"));
                 LogManager.Info(LangManager.GetText("logMessages.tryCreateFirewallPolicyObject", Config.FIREWALL_POLICY_PROGID));
 
-                Type firewallPolicyType = Type.GetTypeFromProgID(Config.FIREWALL_POLICY_PROGID);
-                if (firewallPolicyType == null)
+                firewallPolicy = ComHelper.CreateComObjectWithClsid(
+                    Config.FIREWALL_POLICY_CLSID, 
+                    Config.FIREWALL_POLICY_IID, 
+                    Config.FIREWALL_POLICY_PROGID);
+
+                if (firewallPolicy == null)
                 {
                     LogManager.Error(LangManager.GetText("logMessages.firewallPolicyTypeNotFound"));
                     throw new Exception(LangManager.GetText("logMessages.firewallPolicyTypeNotFound"));
                 }
 
-                LogManager.Info(LangManager.GetText("logMessages.foundType", firewallPolicyType.FullName));
-
-                // 使用动态类型避免接口转换问题
-                firewallPolicy = Activator.CreateInstance(firewallPolicyType);
                 LogManager.Info(LangManager.GetText("logMessages.firewallPolicyInstanceCreated"));
 
                 // 测试获取 CurrentProfileTypes 属性
@@ -213,7 +246,10 @@ namespace FirewallManager
                             currentRules.Add(ruleName);
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.readRuleNameFailed", ex.Message));
+                    }
                 }
 
                 // 更新本地规则列表
@@ -265,7 +301,7 @@ namespace FirewallManager
             {
                 byte[] hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
                 StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < 8; i++) // 取前8个字节（16个十六进制字符），平衡唯一性和名称长度
+                for (int i = 0; i < 16; i++) // 取前16个字节（32个十六进制字符），降低哈希碰撞概率
                 {
                     sb.Append(hashBytes[i].ToString("x2"));
                 }
@@ -319,6 +355,12 @@ namespace FirewallManager
         {
             try
             {
+                // 检查对象是否已释放
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(FirewallService));
+                }
+
                 // 检查防火墙策略是否已初始化
                 if (firewallPolicy == null)
                 {
@@ -350,15 +392,11 @@ namespace FirewallManager
                 // 检查规则是否已存在
                 if (!CheckRuleExists(ruleName))
                 {
-                    // 创建新规则
-                    Type ruleType = Type.GetTypeFromProgID(Config.FIREWALL_RULE_PROGID);
-                    if (ruleType == null)
-                    {
-                        LogManager.Error(LangManager.GetText("logMessages.firewallRuleTypeNotFound"));
-                        return false;
-                    }
-
-                    dynamic newRule = Activator.CreateInstance(ruleType);
+                    // 创建新规则（使用CLSID防止ProgID劫持）
+                    dynamic newRule = ComHelper.CreateComObjectWithClsid(
+                        Config.FIREWALL_RULE_CLSID,
+                        Config.FIREWALL_RULE_IID,
+                        Config.FIREWALL_RULE_PROGID);
                     if (newRule == null)
                     {
                         LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
@@ -461,7 +499,10 @@ namespace FirewallManager
                             string ruleName = fwRule.Name;
                             allRuleNames.Add(ruleName);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            LogManager.Warning(LangManager.GetText("logMessages.readRuleNameFailed", ex.Message));
+                        }
                     }
 
                     // 删除由本程序创建的规则（以Block_开头）
@@ -513,6 +554,12 @@ namespace FirewallManager
         {
             try
             {
+                // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
+                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                {
+                    return false;
+                }
+
                 firewallPolicy.Rules.Remove(ruleName);
                 
                 lock (addedRulesLock)
@@ -675,16 +722,11 @@ namespace FirewallManager
                         // 检查规则是否已存在
                         if (!CheckRuleExists(ruleName))
                         {
-                            // 创建新规则
-                            Type ruleType = Type.GetTypeFromProgID(Config.FIREWALL_RULE_PROGID);
-                            if (ruleType == null)
-                            {
-                                LogManager.Error(LangManager.GetText("logMessages.firewallRuleTypeNotFound"));
-                                skippedCount++;
-                                continue;
-                            }
-
-                            dynamic newRule = Activator.CreateInstance(ruleType);
+                            // 创建新规则（使用CLSID防止ProgID劫持）
+                            dynamic newRule = ComHelper.CreateComObjectWithClsid(
+                                Config.FIREWALL_RULE_CLSID,
+                                Config.FIREWALL_RULE_IID,
+                                Config.FIREWALL_RULE_PROGID);
                             if (newRule == null)
                             {
                                 LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
@@ -830,16 +872,75 @@ namespace FirewallManager
         /// </summary>
         /// <param name="ruleName">规则名称</param>
         /// <returns>规则对象</returns>
-        public dynamic GetRuleDetails(string ruleName)
+        public RuleDetailsInfo GetRuleDetails(string ruleName)
         {
             try
             {
-                return firewallPolicy.Rules.Item(ruleName);
+                // 验证规则名称，防止注入攻击
+                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                {
+                    return null;
+                }
+
+                if (_disposed || firewallPolicy == null)
+                {
+                    return null;
+                }
+
+                dynamic rule = firewallPolicy.Rules.Item(ruleName);
+                if (rule == null)
+                    return null;
+
+                // 验证规则是合法的 COM 对象（使用 CLSID 验证，防止 ProgID 劫持）
+                if (!ComHelper.ValidateComObjectType(rule, Config.FIREWALL_RULE_CLSID, Config.FIREWALL_RULE_IID))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.firewallRuleTypeValidationFailed"));
+                    return null;
+                }
+
+                return new RuleDetailsInfo
+                {
+                    Name = ComHelper.SafeGetProperty<string>(rule, "Name", string.Empty),
+                    Description = ComHelper.SafeGetProperty<string>(rule, "Description", string.Empty),
+                    ApplicationName = ComHelper.SafeGetProperty<string>(rule, "ApplicationName", string.Empty),
+                    Enabled = ComHelper.SafeGetProperty<bool>(rule, "Enabled", false),
+                    Direction = ComHelper.SafeGetProperty<int>(rule, "Direction", 2),
+                    Action = ComHelper.SafeGetProperty<int>(rule, "Action", 0)
+                };
             }
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.getRuleDetailsFailed", ruleName), ex);
                 return null;
+            }
+        }
+
+        public bool UpdateRule(string ruleName, string description, bool enabled, int direction, int action)
+        {
+            try
+            {
+                // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
+                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                {
+                    return false;
+                }
+
+                dynamic rule = firewallPolicy.Rules.Item(ruleName);
+                if (rule == null)
+                    return false;
+
+                SafeSetProperty(rule, "Description", description);
+                SafeSetProperty(rule, "Enabled", enabled);
+                SafeSetProperty(rule, "Direction", direction);
+                SafeSetProperty(rule, "Action", action);
+
+                LogManager.Info(LangManager.GetText("logMessages.updateRule", ruleName));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error(LangManager.GetText("logMessages.saveRuleFailed", ex.Message), ex);
+                return false;
             }
         }
 
