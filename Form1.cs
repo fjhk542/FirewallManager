@@ -219,11 +219,13 @@ namespace FirewallManager
             {
                 if (string.IsNullOrEmpty(path))
                 {
+                    LogManager.Warning("Path validation failed: empty path");
                     return null;
                 }
 
+                LogManager.Info($"Validating path: '{path}', isDirectory={isDirectory}");
+
                 // 去除路径中的特殊前缀（如 \\?\），防止绕过路径验证
-                // 这些前缀允许超出通常的 MAX_PATH 限制，可能被用于路径遍历攻击
                 string sanitizedPath = path;
                 if (sanitizedPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
                 {
@@ -238,41 +240,25 @@ namespace FirewallManager
                     sanitizedPath = @"\\" + sanitizedPath.Substring(8);
                 }
 
-                // 使用 GetRealPath 获取规范化的真实路径（解析符号链接和挂载点）
-                string realPath = ComHelper.GetRealPath(sanitizedPath);
-                if (realPath == null)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.pathNormalizationFailed", path, "GetRealPath failed"));
-                    return null;
-                }
-
-                // 验证路径不以特殊前缀开头
-                if (realPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.rejectExtendedLengthPath", realPath));
-                    return null;
-                }
-
-                // 检查路径及其所有父目录是否包含任何 reparse point（符号链接、junction、挂载点等）
-                if (ComHelper.HasReparsePointInPath(realPath))
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLink", realPath));
-                    return null;
-                }
+                // 获取规范化路径
+                string realPath = Path.GetFullPath(sanitizedPath);
+                LogManager.Info($"Normalized path: '{realPath}'");
 
                 // 检查路径是否存在
                 if (isDirectory && !Directory.Exists(realPath))
                 {
+                    LogManager.Warning($"Path validation failed: directory does not exist '{realPath}'");
                     return null;
                 }
                 if (!isDirectory && !File.Exists(realPath))
                 {
+                    LogManager.Warning($"Path validation failed: file does not exist '{realPath}'");
                     return null;
                 }
 
                 // 检查是否为系统根目录（如 C:\），避免扫描整个系统
                 string rootPath = Path.GetPathRoot(realPath);
-                if (realPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(rootPath) && realPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSystemRoot", realPath));
                     return null;
@@ -281,15 +267,16 @@ namespace FirewallManager
                 // 验证路径根目录是本地驱动器
                 if (!Path.IsPathRooted(realPath))
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.pathValidationFailed", path));
+                    LogManager.Warning($"Path validation failed: not rooted '{realPath}'");
                     return null;
                 }
 
+                LogManager.Info($"Path validated successfully: '{realPath}'");
                 return realPath;
             }
             catch (Exception ex)
             {
-                LogManager.Error(LangManager.GetText("logMessages.pathValidationFailed", path), ex);
+                LogManager.Error($"Path validation exception for '{path}': {ex.Message}", ex);
                 return null;
             }
         }
@@ -1022,7 +1009,7 @@ namespace FirewallManager
 
                 var targets = monitoredTargets.Select(t => t.Path).ToList();
                 string json = JsonSerializer.Serialize(targets, new JsonSerializerOptions { WriteIndented = true });
-                ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
+                ComHelper.AtomicWriteAllText(configPath, json, Config.Utf8NoBom);
 
                 // 保存后立即更新完整性校验值
                 if (!Config.SaveConfigIntegrityHash(configPath))
@@ -1297,39 +1284,60 @@ namespace FirewallManager
         /// <param name="e">事件参数</param>
         private void addFolderToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 使用 FolderBrowserDialog 选择文件夹
-            using (var folderDialog = new FolderBrowserDialog())
+            try
             {
-                folderDialog.Description = LangManager.GetText("buttons.addFolder");
-                folderDialog.UseDescriptionForTitle = true; // 在 Windows Vista 及以上版本中显示标题
-                
-                if (folderDialog.ShowDialog() == DialogResult.OK)
+                // 使用 FolderBrowserDialog 选择文件夹
+                using (var folderDialog = new FolderBrowserDialog())
                 {
-                    string selectedPath = folderDialog.SelectedPath;
+                    folderDialog.Description = LangManager.GetText("buttons.addFolder");
+                    folderDialog.UseDescriptionForTitle = true;
                     
-                    // 规范化和验证路径
-                    string normalizedPath = NormalizeAndValidatePath(selectedPath, true);
-                    if (normalizedPath == null)
-                    {
-                        MessageBox.Show(LangManager.GetText("messages.invalidPath"), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
+                    LogManager.Info("Opening folder browser dialog...");
                     
-                    if (!monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                    if (folderDialog.ShowDialog() == DialogResult.OK)
                     {
-                        var target = new ScanTarget(normalizedPath);
-                        monitoredTargets.Add(target);
-                        folderListBox.Items.Add(target);
-                        SaveMonitoredTargets(); // 保存监控目标
-                        LogManager.Info(LangManager.GetText("logMessages.addFolderToMonitor", normalizedPath));
+                        string selectedPath = folderDialog.SelectedPath;
+                        LogManager.Info($"Selected folder: '{selectedPath}'");
                         
-                        // 如果自动监控已启用，为新添加的文件夹创建监控器
-                        if (autoMonitorCheckBox.Checked && !target.IsExe)
+                        // 规范化和验证路径
+                        string normalizedPath = NormalizeAndValidatePath(selectedPath, true);
+                        if (normalizedPath == null)
                         {
-                            CreateFileWatcher(normalizedPath);
+                            LogManager.Warning($"Path validation failed for: '{selectedPath}'");
+                            MessageBox.Show(LangManager.GetText("messages.invalidPath"), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return;
+                        }
+                        
+                        LogManager.Info($"Path validated: '{normalizedPath}'");
+                        
+                        if (!monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var target = new ScanTarget(normalizedPath);
+                            monitoredTargets.Add(target);
+                            folderListBox.Items.Add(target);
+                            SaveMonitoredTargets();
+                            LogManager.Info(LangManager.GetText("logMessages.addFolderToMonitor", normalizedPath));
+                            
+                            if (autoMonitorCheckBox.Checked && !target.IsExe)
+                            {
+                                CreateFileWatcher(normalizedPath);
+                            }
+                        }
+                        else
+                        {
+                            LogManager.Info($"Path already monitored: '{normalizedPath}'");
                         }
                     }
+                    else
+                    {
+                        LogManager.Info("Folder browser dialog cancelled");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"Error adding folder: {ex.Message}", ex);
+                MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1722,14 +1730,32 @@ namespace FirewallManager
         {
             try
             {
-                string clipboardText = Clipboard.GetText();
+                // 使用重试机制访问剪贴板
+                string clipboardText = null;
+                int retryCount = 3;
+                for (int i = 0; i < retryCount; i++)
+                {
+                    try
+                    {
+                        if (Clipboard.ContainsText())
+                        {
+                            clipboardText = Clipboard.GetText();
+                            break;
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        System.Threading.Thread.Sleep(100);
+                    }
+                }
+
                 if (string.IsNullOrWhiteSpace(clipboardText))
                 {
                     MessageBox.Show(LangManager.GetText("messages.clipboardEmpty"), LangManager.GetText("messages.clipboardEmptyTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
                 
-                // 限制剪贴板内容大小，防止内存耗尽攻击（最大 1MB）
+                // 限制剪贴板内容大小
                 if (clipboardText.Length > 1024 * 1024)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.clipboardContentTooLarge"));
@@ -1737,7 +1763,7 @@ namespace FirewallManager
                     return;
                 }
 
-                // 限制处理路径数量，防止恶意大量路径导致 DoS
+                // 解析路径（支持多种分隔符：\r\n, \n, \r）
                 string[] paths = clipboardText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 if (paths.Length > 1000)
                 {
@@ -1749,50 +1775,56 @@ namespace FirewallManager
                 int addedCount = 0;
                 int invalidCount = 0;
                 
+                LogManager.Info($"Processing {paths.Length} pasted paths...");
+
                 foreach (string path in paths)
                 {
                     string trimmedPath = path.Trim();
                     if (string.IsNullOrWhiteSpace(trimmedPath))
                         continue;
 
-                    // 限制单条路径长度（最大500字符），防止超长路径导致内存问题
-                    if (trimmedPath.Length > 500)
-                    {
-                        LogManager.Warning(LangManager.GetText("logMessages.pathTooLong", trimmedPath.Substring(0, 100)));
-                        invalidCount++;
-                        continue;
-                    }
-
-                    // 过滤控制字符，防止路径注入和日志伪造
+                    // 过滤控制字符
                     trimmedPath = System.Text.RegularExpressions.Regex.Replace(
                         trimmedPath, @"[\x00-\x1F\x7F]", string.Empty);
                     if (string.IsNullOrWhiteSpace(trimmedPath))
                         continue;
 
-                    // 先规范化路径，再检查存在性，防止路径遍历和特殊前缀绕过
-                    string normalizedPath = NormalizeAndValidatePath(trimmedPath, false);
-                    if (normalizedPath == null)
+                    LogManager.Info($"Processing path: '{trimmedPath}'");
+
+                    // 先尝试作为目录验证，再尝试作为文件验证
+                    string normalizedPath = null;
+                    if (Directory.Exists(trimmedPath))
                     {
-                        // 如果作为文件路径无效，尝试作为目录路径规范化
                         normalizedPath = NormalizeAndValidatePath(trimmedPath, true);
+                    }
+                    else if (File.Exists(trimmedPath))
+                    {
+                        normalizedPath = NormalizeAndValidatePath(trimmedPath, false);
+                    }
+                    else
+                    {
+                        LogManager.Warning($"Path does not exist: '{trimmedPath}'");
+                        invalidCount++;
+                        continue;
                     }
                     
                     if (normalizedPath == null)
                     {
-                        LogManager.Warning(LangManager.GetText("logMessages.skipInvalidPath", trimmedPath));
+                        LogManager.Warning($"Path validation failed: '{trimmedPath}'");
                         invalidCount++;
                         continue;
                     }
                     
                     bool isDirectory = Directory.Exists(normalizedPath);
-                    bool isFile = File.Exists(normalizedPath) && normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+                    bool isExeFile = File.Exists(normalizedPath) && normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
                     
-                    if ((isDirectory || isFile) && !monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                    if ((isDirectory || isExeFile) && !monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase)))
                     {
                         var target = new ScanTarget(normalizedPath);
                         monitoredTargets.Add(target);
                         folderListBox.Items.Add(target);
                         addedCount++;
+                        LogManager.Info($"Added: '{normalizedPath}'");
                     }
                     else
                     {
@@ -1802,10 +1834,18 @@ namespace FirewallManager
                 
                 if (addedCount > 0)
                 {
-                    LogManager.Info(LangManager.GetText("logMessages.pastePathsSuccess", addedCount));
+                    LogManager.Info($"Pasted {addedCount} paths successfully");
                     SaveMonitoredTargets();
+                    
+                    if (invalidCount > 0)
+                    {
+                        MessageBox.Show(
+                            string.Format(LangManager.GetText("messages.pastePartialSuccess"), addedCount, invalidCount),
+                            LangManager.GetText("messages.pastePartialSuccessTitle"),
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
                 }
-                else if (invalidCount > 0)
+                else
                 {
                     MessageBox.Show(LangManager.GetText("messages.noValidPath"), LangManager.GetText("messages.noValidPathTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }

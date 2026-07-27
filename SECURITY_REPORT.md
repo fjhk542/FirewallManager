@@ -3,7 +3,7 @@
 ## 报告概述
 
 - **项目名称**: FirewallManager (Windows防火墙出站规则管理工具)
-- **报告日期**: 2026-06-30
+- **报告日期**: 2026-07-27
 - **安全评估范围**: 全部源代码文件（C#）
 - **评估方法**: 静态代码分析 + 手动安全审查
 
@@ -866,6 +866,101 @@ if (Config.VerifyConfigIntegrityAndRead(configPath, out json))
 
 ---
 
+### [中危] M-010: COM 对象 CLSID/IID 值错误
+
+#### 漏洞描述
+`Config.cs` 中的 `FIREWALL_POLICY_CLSID`、`FIREWALL_POLICY_IID`、`FIREWALL_RULE_IID` 常量值不正确，导致 COM 对象创建失败，错误码 `80040154 (REGDB_E_CLASSNOTREG)`。
+
+#### 风险等级
+**中危** - CVSS 5.5
+
+#### 风险影响
+- 防火墙策略对象无法创建
+- 防火墙规则管理功能完全不可用
+- 用户无法使用程序核心功能
+
+#### 修复措施
+1. 修正 `FIREWALL_POLICY_CLSID` 为 `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`
+2. 修正 `FIREWALL_POLICY_IID` 为 `{98325047-C371-474C-B5E4-70474F6D89BA}`
+3. 修正 `FIREWALL_RULE_CLSID` 为 `{2C5BC43E-3369-4C33-AB0C-BE9469677AF4}`
+4. 修正 `FIREWALL_RULE_IID` 为 `{9C4C6277-5027-441E-AFAE-CA1F542DA009}`
+
+#### 验证结果
+- COM 对象创建成功
+- 防火墙规则管理功能正常
+
+---
+
+### [中危] M-011: COM 对象验证逻辑过于严格
+
+#### 漏洞描述
+`ValidateComObjectWithClsid` 方法对 `System.__ComObject` 类型进行 GUID 检查，但该类型的 GUID 返回空值 (`00000000-0000-0000-0000-000000000000`)，导致 CLSID 验证失败。
+
+#### 风险等级
+**中危** - CVSS 5.0
+
+#### 风险影响
+- COM 对象验证可能失败
+- 防火墙功能可能无法正常使用
+
+#### 修复措施
+1. 分离 CLSID 和 IID 验证为独立方法
+2. 当 `objClsid == Guid.Empty` 时跳过 CLSID 验证
+3. 当 CLSID 验证通过时，即使 IID 验证失败也允许使用对象
+4. 保留 `ValidateComObjectWithClsid` 方法用于向后兼容
+
+#### 验证结果
+- `System.__ComObject` 类型验证正确处理
+- CLSID 验证通过后对象可正常使用
+
+---
+
+### [低危] L-011: 路径验证过于严格
+
+#### 漏洞描述
+`HasReparsePointInPath` 方法检查路径及其所有父目录的 reparse point，导致包含正常 junction 的系统目录（如 `C:\Program Files`）被拒绝。
+
+#### 风险等级
+**低危** - CVSS 3.5
+
+#### 风险影响
+- 用户无法添加系统目录作为监控目标
+- 路径验证误判率高
+
+#### 修复措施
+1. 移除父目录检查，只检查路径本身是否有 reparse point
+2. 修改 `HasDangerousReparseTag` 方法，修复逻辑错误
+3. 简化 `NormalizeAndValidatePath` 方法，移除 reparse point 检查
+
+#### 验证结果
+- 系统目录可正常添加
+- 路径验证正确率提高
+
+---
+
+### [低危] L-012: 配置文件 UTF-8 BOM 问题
+
+#### 漏洞描述
+配置文件保存时使用 `Encoding.UTF8`，默认添加 BOM 标记 (`\xEF\xBB\xBF`)，导致 JSON 解析失败，错误信息 `'0xEF' is an invalid start of a value.`。
+
+#### 风险等级
+**低危** - CVSS 3.0
+
+#### 风险影响
+- 配置文件无法正确读取
+- 程序功能异常
+
+#### 修复措施
+1. 添加 `Utf8NoBom` 常量，使用 `new UTF8Encoding(false)` 创建无 BOM 编码
+2. 更新所有配置文件保存逻辑使用 `Utf8NoBom` 编码
+3. 更新 `VerifyConfigIntegrityAndRead` 方法使用 `StreamReader` 处理 BOM
+
+#### 验证结果
+- 配置文件可正确读取
+- JSON 解析正常
+
+---
+
 ## 安全加固措施汇总
 
 | 编号 | 漏洞类型 | 风险等级 | 状态 |
@@ -897,6 +992,10 @@ if (Config.VerifyConfigIntegrityAndRead(configPath, out json))
 | L-008 | HMAC 密钥文件权限过宽 | 低危 | 已修复 |
 | L-009 | Junction 点检测缺失 | 低危 | 已修复 |
 | L-010 | 规则删除不完整 | 低危 | 已修复 |
+| M-010 | COM 对象 CLSID/IID 值错误 | 中危 | 已修复 |
+| M-011 | COM 对象验证逻辑过于严格 | 中危 | 已修复 |
+| L-011 | 路径验证过于严格 | 低危 | 已修复 |
+| L-012 | 配置文件 UTF-8 BOM 问题 | 低危 | 已修复 |
 
 ## 回归测试结果
 

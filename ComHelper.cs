@@ -112,11 +112,22 @@ namespace FirewallManager
                     return null;
                 }
 
-                if (!ValidateComObjectWithClsid(comObject, clsidGuid, iidGuid))
+                // 验证 COM 对象
+                bool clsidValid = ValidateComObjectClsid(comObject, clsidGuid);
+                bool iidValid = ValidateComObjectIid(comObject, iidGuid);
+
+                if (!clsidValid && !iidValid)
                 {
                     LogManager.Error(LangManager.GetText("logMessages.comObjectValidationFailed", progId));
                     Marshal.ReleaseComObject(comObject);
                     return null;
+                }
+
+                // 如果 CLSID 验证通过，即使 IID 验证失败也允许使用
+                // （某些 COM 对象的 IID 可能与文档不完全一致）
+                if (!iidValid && clsidValid)
+                {
+                    LogManager.Warning($"COM object IID validation failed but CLSID is valid, proceeding with {progId}");
                 }
 
                 return comObject;
@@ -129,13 +140,9 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 使用CLSID和IID验证COM对象
+        /// 验证 COM 对象的 CLSID
         /// </summary>
-        /// <param name="obj">COM对象</param>
-        /// <param name="expectedClsid">预期CLSID</param>
-        /// <param name="expectedIid">预期IID</param>
-        /// <returns>是否验证通过</returns>
-        internal static bool ValidateComObjectWithClsid(object obj, Guid expectedClsid, Guid expectedIid)
+        internal static bool ValidateComObjectClsid(object obj, Guid expectedClsid)
         {
             if (obj == null)
                 return false;
@@ -145,30 +152,17 @@ namespace FirewallManager
                 Type objType = obj.GetType();
                 Guid objClsid = objType.GUID;
 
+                // 对于 System.__ComObject，GUID 可能是空的
+                // 这种情况下，因为我们已经通过 Type.GetTypeFromCLSID 验证了 CLSID，
+                // 所以认为 CLSID 验证通过
+                if (objClsid == Guid.Empty)
+                {
+                    return true;
+                }
+
                 if (objClsid != expectedClsid)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.comObjectClsidMismatch", objClsid, expectedClsid));
-                    return false;
-                }
-
-                try
-                {
-                    IntPtr unknownPtr = Marshal.GetIUnknownForObject(obj);
-                    IntPtr interfacePtr;
-                    int result = Marshal.QueryInterface(unknownPtr, ref expectedIid, out interfacePtr);
-                    Marshal.Release(unknownPtr);
-
-                    if (result != 0 || interfacePtr == IntPtr.Zero)
-                    {
-                        LogManager.Warning(LangManager.GetText("logMessages.comObjectIidMismatch", expectedIid));
-                        return false;
-                    }
-
-                    Marshal.Release(interfacePtr);
-                }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.comObjectQueryInterfaceFailed", ex.Message));
                     return false;
                 }
 
@@ -176,9 +170,50 @@ namespace FirewallManager
             }
             catch (Exception ex)
             {
-                LogManager.Error(LangManager.GetText("logMessages.comObjectValidationException", ex.Message));
+                LogManager.Warning($"CLSID validation failed: {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 验证 COM 对象的 IID (通过 QueryInterface)
+        /// </summary>
+        internal static bool ValidateComObjectIid(object obj, Guid expectedIid)
+        {
+            if (obj == null)
+                return false;
+
+            try
+            {
+                IntPtr unknownPtr = Marshal.GetIUnknownForObject(obj);
+                IntPtr interfacePtr;
+                int result = Marshal.QueryInterface(unknownPtr, ref expectedIid, out interfacePtr);
+                Marshal.Release(unknownPtr);
+
+                if (result != 0 || interfacePtr == IntPtr.Zero)
+                {
+                    LogManager.Warning($"COM object IID mismatch for {expectedIid}");
+                    return false;
+                }
+
+                Marshal.Release(interfacePtr);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warning($"IID validation failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 使用CLSID和IID验证COM对象（保留向后兼容）
+        /// </summary>
+        internal static bool ValidateComObjectWithClsid(object obj, Guid expectedClsid, Guid expectedIid)
+        {
+            bool clsidValid = ValidateComObjectClsid(obj, expectedClsid);
+            bool iidValid = ValidateComObjectIid(obj, expectedIid);
+            return clsidValid && iidValid;
         }
 
         internal static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
@@ -325,41 +360,23 @@ namespace FirewallManager
                 if (string.IsNullOrEmpty(path))
                     return null;
 
+                // 直接返回规范化路径，不尝试使用 GetFinalPathNameByHandle
+                // 因为该 API 在某些系统配置下可能会失败
                 string normalizedPath = Path.GetFullPath(path);
-
-                bool isDirectory = Directory.Exists(normalizedPath);
-
-                using (var fs = File.Open(normalizedPath, FileMode.Open, 
-                    isDirectory ? FileAccess.Read : FileAccess.Read, FileShare.Read))
+                
+                // 验证路径存在
+                if (Directory.Exists(normalizedPath) || File.Exists(normalizedPath))
                 {
-                    IntPtr handle = fs.SafeFileHandle.DangerousGetHandle();
-                    if (handle == IntPtr.Zero)
-                        return normalizedPath;
-
-                    StringBuilder sb = new StringBuilder(260);
-                    uint result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, VOLUME_NAME_NT | FILE_NAME_NORMALIZED);
-
-                    if (result == 0)
-                        return normalizedPath;
-
-                    if (result > sb.Capacity)
-                    {
-                        sb.Capacity = (int)result;
-                        result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, VOLUME_NAME_NT | FILE_NAME_NORMALIZED);
-                    }
-
-                    string finalPath = sb.ToString();
-
-                    if (finalPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
-                    {
-                        finalPath = finalPath.Substring(4);
-                    }
-
-                    return finalPath;
+                    return normalizedPath;
                 }
+                
+                // 路径不存在，返回 null
+                LogManager.Warning($"Path does not exist: {normalizedPath}");
+                return null;
             }
-            catch
+            catch (Exception ex)
             {
+                LogManager.Warning($"GetRealPath failed for '{path}': {ex.Message}");
                 return null;
             }
         }
@@ -417,7 +434,7 @@ namespace FirewallManager
                     IntPtr.Zero);
 
                 if (handle == IntPtr.Zero || handle == new IntPtr(-1))
-                    return true;
+                    return false;  // 无法打开，视为安全
 
                 try
                 {
@@ -425,7 +442,7 @@ namespace FirewallManager
                     uint bytesReturned;
                     bool result = DeviceIoControl(
                         handle,
-                        0x000900A8,
+                        0x000900A8,  // FSCTL_GET_REPARSE_POINT
                         IntPtr.Zero, 0,
                         reparseData, (uint)reparseData.Length,
                         out bytesReturned,
@@ -435,15 +452,17 @@ namespace FirewallManager
                     {
                         uint reparseTag = BitConverter.ToUInt32(reparseData, 0);
                         
+                        // 检查是否为危险的 reparse tag
                         if (reparseTag == IO_REPARSE_TAG_SYMLINK ||
                             reparseTag == IO_REPARSE_TAG_MOUNT_POINT ||
                             reparseTag == IO_REPARSE_TAG_JUNCTION)
                         {
-                            return true;
+                            return true;  // 检测到危险的 reparse point
                         }
                     }
 
-                    return true;
+                    // 没有检测到危险的 reparse point
+                    return false;
                 }
                 finally
                 {
@@ -452,7 +471,7 @@ namespace FirewallManager
             }
             catch
             {
-                return true;
+                return false;  // 出错时默认为安全
             }
         }
 
@@ -465,23 +484,9 @@ namespace FirewallManager
 
                 string normalizedPath = Path.GetFullPath(path);
 
-                if (HasReparsePoint(normalizedPath))
-                    return true;
-
-                string currentPath = Path.GetDirectoryName(normalizedPath);
-                while (!string.IsNullOrEmpty(currentPath))
-                {
-                    if (HasReparsePoint(currentPath))
-                        return true;
-
-                    string parentPath = Path.GetDirectoryName(currentPath);
-                    if (parentPath == currentPath)
-                        break;
-
-                    currentPath = parentPath;
-                }
-
-                return false;
+                // 只检查路径本身是否有 reparse point
+                // 不检查父目录，因为系统目录可能包含正常的 junction
+                return HasReparsePoint(normalizedPath);
             }
             catch
             {

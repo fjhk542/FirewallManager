@@ -341,6 +341,26 @@ dotnet test
 
 ## 版本历史
 
+### v1.9.0
+
+- **COM 对象验证修复**: 修复 COM 对象 CLSID/IID 验证逻辑，添加回退机制，解决 `80040154 (REGDB_E_CLASSNOTREG)` 错误
+- **路径验证简化**: 简化 `NormalizeAndValidatePath` 方法，移除过于严格的 reparse point 检查，解决系统目录被拒绝的问题
+- **GetRealPath 简化**: 简化 `GetRealPath` 方法实现，移除复杂的 Win32 API 调用，使用 `Path.GetFullPath()` 直接获取规范化路径
+- **剪贴板访问改进**: 添加剪贴板访问重试机制（3次，每次间隔100ms），解决 `Clipboard.GetText()` 权限问题
+- **COM 对象分离验证**: 分离 CLSID 和 IID 验证逻辑，当 CLSID 验证通过时即使 IID 验证失败也允许使用对象
+- **调试日志增强**: 添加详细的路径验证调试日志，便于排查路径验证失败问题
+- **配置文件 BOM 修复**: 修复配置文件 UTF-8 BOM 问题，保存时使用 `Utf8NoBom` 编码
+- **更新项目版本号到 1.9.0**
+
+### v1.8.0
+
+- **签名验证增强**: 添加 `WinVerifyTrust` API 调用，验证文件签名完整性（不仅仅是证书链）
+- **COM 对象验证改进**: 改用 CLSID/IID 验证，移除 ProgID 依赖，防止 ProgID 劫持
+- **TOCTOU 防护**: 添加 `VerifyConfigIntegrityAndRead` 方法，在锁定状态下完成验证和读取
+- **目录打开修复**: 使用 `CreateFile` API 打开目录并添加 `FILE_FLAG_BACKUP_SEMANTICS` 标志
+- **规则名称验证**: 在 `UpdateRule` 和 `DeleteRule` 中添加规则名称验证（空检查 + 长度限制 256 字符）
+- **更新项目版本号到 1.8.0**
+
 ### v1.7.0
 
 - **安全加固**: 进一步安全漏洞修复，修复 9 个安全漏洞（1 高危、3 中危、5 低危）

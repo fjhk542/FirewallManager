@@ -5,6 +5,32 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 此项目遵循 [语义化版本控制](https://semver.org/lang/zh-CN/)。
 
+## [1.9.0] - 2026-07-27
+
+### 新增
+- 添加 `ValidateComObjectClsid` 和 `ValidateComObjectIid` 独立验证方法
+- 添加剪贴板访问重试机制（3次，每次间隔100ms）
+- 添加 `Clipboard.ContainsText()` 检查，避免空剪贴板异常
+- 添加配置文件 UTF-8 无 BOM 编码常量 `Utf8NoBom`
+
+### 修改
+- 重写 `CreateComObjectWithClsid` 方法，分离 CLSID 和 IID 验证逻辑
+- 修改 `NormalizeAndValidatePath` 方法，简化路径验证逻辑，移除 reparse point 检查
+- 简化 `GetRealPath` 方法实现，移除复杂的 Win32 API 调用
+- 更新 `HasReparsePointInPath` 方法，移除父目录检查
+- 更新 `HasDangerousReparseTag` 方法，修复逻辑错误
+- 更新 `Form1.cs` 配置文件保存逻辑，使用 `Utf8NoBom` 编码
+- 更新 `WhitelistForm.cs` 白名单保存逻辑，使用 `Utf8NoBom` 编码
+- 添加详细的路径验证调试日志，便于排查问题
+
+### 修复
+- **COM 对象 CLSID 错误**: 修复 `FIREWALL_POLICY_CLSID`、`FIREWALL_POLICY_IID`、`FIREWALL_RULE_IID` 值不正确，解决 `80040154 (REGDB_E_CLASSNOTREG)` 错误
+- **COM 对象验证逻辑**: 修复 `System.__ComObject` 类型 GUID 为空时验证失败的问题，添加回退机制
+- **路径验证过于严格**: 修复 `HasReparsePointInPath` 检查父目录导致系统目录被拒绝的问题
+- **GetRealPath 返回 null**: 修复异常时返回 null 的问题，改为返回规范化路径
+- **文件夹路径无法粘贴**: 修复剪贴板访问权限问题，添加重试机制
+- **配置文件 BOM 问题**: 修复配置文件开头的 UTF-8 BOM 导致 JSON 解析失败的问题
+
 ## [1.8.0] - 2026-07-23
 
 ### 新增

@@ -9,6 +9,12 @@ namespace FirewallManager
     public static class Config
     {
         /// <summary>
+        /// 不带 BOM 的 UTF-8 编码，用于 JSON 文件读写
+        /// 避免 BOM 导致 JSON 解析错误
+        /// </summary>
+        public static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+
+        /// <summary>
         /// 规则名称前缀
         /// </summary>
         public const string RULE_NAME_PREFIX = "Block_";
@@ -49,24 +55,24 @@ namespace FirewallManager
         public const string FIREWALL_RULE_PROGID = "HNetCfg.FWRule";
 
         /// <summary>
-        /// 防火墙策略CLSID（固定值，防止ProgID劫持）
+        /// 防火墙策略CLSID (NetFwPolicy2) - 从注册表验证
         /// </summary>
-        public const string FIREWALL_POLICY_CLSID = "E2B3C97F-6AE1-41AC-874A-C6F4D9D163F7";
+        public const string FIREWALL_POLICY_CLSID = "E2B3C97F-6AE1-41AC-817A-F6F92166D7DD";
 
         /// <summary>
-        /// 防火墙规则CLSID（固定值，防止ProgID劫持）
+        /// 防火墙规则CLSID (NetFwRule) - 从注册表验证
         /// </summary>
         public const string FIREWALL_RULE_CLSID = "2C5BC43E-3369-4C33-AB0C-BE9469677AF4";
 
         /// <summary>
-        /// 防火墙策略接口IID
+        /// 防火墙策略接口IID (INetFwPolicy2)
         /// </summary>
-        public const string FIREWALL_POLICY_IID = "E2B3C97F-6AE1-41AC-874A-C6F4D9D163F7";
+        public const string FIREWALL_POLICY_IID = "98325047-C371-474C-B5E4-70474F6D89BA";
 
         /// <summary>
-        /// 防火墙规则接口IID
+        /// 防火墙规则接口IID (INetFwRule)
         /// </summary>
-        public const string FIREWALL_RULE_IID = "2C5BC43E-3369-4C33-AB0C-BE9469677AF4";
+        public const string FIREWALL_RULE_IID = "9C4C6277-5027-441E-AFAE-CA1F542DA009";
 
         /// <summary>
         /// 所有防火墙配置文件
@@ -392,7 +398,11 @@ namespace FirewallManager
                                 }
 
                                 // 验证通过后才返回内容，确保没有TOCTOU窗口
-                                content = Encoding.UTF8.GetString(configBytes);
+                                // 使用 StreamReader 读取内容以自动处理 BOM
+                                using (var streamReader = new StreamReader(new MemoryStream(configBytes), Encoding.UTF8, true))
+                                {
+                                    content = streamReader.ReadToEnd();
+                                }
                                 return true;
                             }
                         }

@@ -362,7 +362,7 @@ namespace FirewallManager
                 }
                 
                 string json = JsonSerializer.Serialize(whitelist, new JsonSerializerOptions { WriteIndented = true });
-                ComHelper.AtomicWriteAllText(configPath, json, Encoding.UTF8);
+                ComHelper.AtomicWriteAllText(configPath, json, Config.Utf8NoBom);
 
                 // 保存后更新完整性校验值
                 Config.SaveConfigIntegrityHash(configPath);

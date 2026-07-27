@@ -1,0 +1,9 @@
+fix: 修复 COM 对象验证和路径验证问题 (v1.9.0)
+
+- 修复 COM 对象 CLSID/IID 值错误，解决 80040154 错误
+- 分离 CLSID 和 IID 验证逻辑，添加回退机制
+- 简化路径验证逻辑，移除过于严格的 reparse point 检查
+- 简化 GetRealPath 方法实现，移除复杂的 Win32 API 调用
+- 添加剪贴板访问重试机制
+- 修复配置文件 UTF-8 BOM 问题
+- 更新文档：README.md, CHANGELOG.md, SECURITY_REPORT.md
