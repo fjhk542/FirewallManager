@@ -1,26 +1,13 @@
-# Build outputs
+# Build output
 bin/
 obj/
-.trae/
+publish/
+release/
 
-# Visual Studio files
+# IDE
 .vs/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
+.vscode/
 
-# Rider/Resharper
-.idea/
-*.sln.iml
-
-# Logs
-*.log
-
-# Packages
-packages/
-*.nupkg
-
-# Temporary files
+# Temp
+commit-msg.txt
 *.tmp
-*.temp

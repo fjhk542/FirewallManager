@@ -383,11 +383,8 @@ namespace FirewallManager
                     return false;
                 }
 
-                // 生成规则名称
-                string fileName = System.IO.Path.GetFileNameWithoutExtension(exePath);
-                string sanitizedFileName = SanitizeRuleName(fileName);
-                string pathHash = GetPathHash(exePath);
-                string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                // 生成规则名称（统一调用 RuleNamingService）
+                string ruleName = RuleNamingService.BuildRuleName(exePath);
 
                 // 检查规则是否已存在
                 if (!CheckRuleExists(ruleName))
@@ -556,37 +553,8 @@ namespace FirewallManager
         /// <returns>是否由本程序创建</returns>
         private bool IsRuleCreatedByUs(string ruleName)
         {
-            if (string.IsNullOrEmpty(ruleName))
-                return false;
-
-            // 必须以 Block_ 开头
-            if (!ruleName.StartsWith(Config.RULE_NAME_PREFIX))
-                return false;
-
-            // 去除前缀后的部分必须包含下划线分隔符
-            string rest = ruleName.Substring(Config.RULE_NAME_PREFIX.Length);
-            int lastUnderscoreIndex = rest.LastIndexOf('_');
-            if (lastUnderscoreIndex <= 0)
-                return false;
-
-            // 文件名部分不为空
-            string fileNamePart = rest.Substring(0, lastUnderscoreIndex);
-            if (string.IsNullOrEmpty(fileNamePart))
-                return false;
-
-            // 哈希值部分必须是有效的base64url编码（32字符）
-            string hashPart = rest.Substring(lastUnderscoreIndex + 1);
-            if (string.IsNullOrEmpty(hashPart) || hashPart.Length != 32)
-                return false;
-
-            // 验证hashPart只包含base64url安全字符
-            foreach (char c in hashPart)
-            {
-                if (!char.IsLetterOrDigit(c) && c != '-' && c != '_')
-                    return false;
-            }
-
-            return true;
+            // 转发到 RuleNamingService 统一实现
+            return RuleNamingService.IsRuleCreatedByUs(ruleName);
         }
 
         /// <summary>
@@ -730,11 +698,8 @@ namespace FirewallManager
                             continue;
                         }
 
-                        // 生成包含文件路径哈希值的规则名称，确保唯一性
-                        string fileName = System.IO.Path.GetFileNameWithoutExtension(exeFile);
-                        string sanitizedFileName = SanitizeRuleName(fileName);
-                        string pathHash = GetPathHash(exeFile);
-                        string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                        // 生成包含文件路径哈希值的规则名称，确保唯一性（统一调用 RuleNamingService）
+                        string ruleName = RuleNamingService.BuildRuleName(exeFile);
 
                         // 检查应用程序是否在白名单中
                         if (WhitelistForm.IsInWhitelist(exeFile))

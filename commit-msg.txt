@@ -1,28 +1,22 @@
-Security: 修复安全审计报告中的高危和中危漏洞
+Refactor(P0): 重构实施 - 死代码清理 + 规则命名收敛 + 配置 schema v2
 
-H1: AtomicWriteAllText/Bytes 临时文件符号链接攻击修复
-- 使用随机临时文件名 + FileMode.CreateNew + FileShare.None
-- 句柄级 ReparsePoint 校验 + 受限 ACL
+D1-D13: 删除死代码
+- Form1: CacheFirewallRules/LoadAddedRules/folderBrowserDialog/IsSymbolicLink/空region/taskCompletedEvent
+- ComHelper: ValidateComObjectWithClsid/GetFinalPathNameByHandle P/Invoke
+- LangManager: TestLanguageLoading
+- LogManager: Debug()
+- WhitelistForm: lastModifiedTime
+- csproj: LanguageDiagnostic Remove 项
 
-H2: LogManager 日志文件符号链接跟随 + TOCTOU 修复
-- 启动时以排他句柄打开日志文件并持有
-- 追加/清理/清空复用同一句柄，清理改为原子替换
+RuleNamingService: 新增规则命名服务，5处重复构建收敛为1处统一入口
+- BuildRuleName/SanitizeRuleName/GetPathHash/IsRuleCreatedByUs
 
-M1: ClearAllRules() 规则误删风险修复
-- 新增 IsRuleCreatedByUs() 格式校验方法
-- 规则名必须符合 Block_{fileName}_{32位base64url哈希} 格式
+U1 接线: HasReparsePointInPath 接入 3 处 watcher 事件
+- 含父级目录检测，防止符号链接绕过
 
-M3: 信任检查策略矛盾修复
-- 全量扫描添加 IsFilePathTrusted() 信任检查
-- 与自动监控策略保持一致
+TargetStore: 新增配置持久化服务，schema v2 升级
+- 持久化 language/autoMonitor/targets
+- 兼容 v1 纯数组格式，自动迁移
 
-M4: reparse point 检查不完整修复
-- 系统目录只检查路径本身
-- 非系统目录递归检查完整路径链(最多10层)
-
-M5: 添加全局未处理异常处理
-- 注册 AppDomain.UnhandledException
-- 注册 Application.ThreadException
-- 退出时释放日志文件句柄
-
-同时备份重构前源代码和编译产物
+版本号对齐: csproj 1.7.0.0 -> 1.9.0.0
+csproj: 排除 backup/publish/release 目录避免误编译

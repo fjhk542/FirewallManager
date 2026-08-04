@@ -47,11 +47,6 @@ namespace FirewallManager
         private static volatile bool whitelistCacheLoaded = false;
 
         /// <summary>
-        /// 白名单文件的最后修改时间
-        /// </summary>
-        private static DateTime lastModifiedTime = DateTime.MinValue;
-
-        /// <summary>
         /// 用于确保线程安全的锁对象
         /// Lock object for ensuring thread safety
         /// </summary>

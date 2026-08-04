@@ -206,16 +206,6 @@ namespace FirewallManager
             }
         }
 
-        /// <summary>
-        /// 使用CLSID和IID验证COM对象（保留向后兼容）
-        /// </summary>
-        internal static bool ValidateComObjectWithClsid(object obj, Guid expectedClsid, Guid expectedIid)
-        {
-            bool clsidValid = ValidateComObjectClsid(obj, expectedClsid);
-            bool iidValid = ValidateComObjectIid(obj, expectedIid);
-            return clsidValid && iidValid;
-        }
-
         internal static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
         {
             try
@@ -346,12 +336,6 @@ namespace FirewallManager
             uint nOutBufferSize,
             out uint lpBytesReturned,
             IntPtr lpOverlapped);
-
-        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        private static extern uint GetFinalPathNameByHandle(IntPtr hFile, System.Text.StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
-
-        private const uint VOLUME_NAME_NT = 0x0;
-        private const uint FILE_NAME_NORMALIZED = 0x2;
 
         internal static string GetRealPath(string path)
         {

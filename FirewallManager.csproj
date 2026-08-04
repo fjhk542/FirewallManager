@@ -6,9 +6,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Firewall.ico</ApplicationIcon>
-    <Version>1.7.0.0</Version>
-    <AssemblyVersion>1.7.0.0</AssemblyVersion>
-    <FileVersion>1.7.0.0</FileVersion>
+    <Version>1.9.0.0</Version>
+    <AssemblyVersion>1.9.0.0</AssemblyVersion>
+    <FileVersion>1.9.0.0</FileVersion>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <DebugSymbols>false</DebugSymbols>
@@ -29,17 +29,26 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="LanguageDiagnostic\**\*" />
-    <Content Remove="LanguageDiagnostic\**\*" />
-    <EmbeddedResource Remove="LanguageDiagnostic\**\*" />
-    <None Remove="LanguageDiagnostic\**\*" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Compile Remove="FirewallManager.Tests\**\*" />
     <Content Remove="FirewallManager.Tests\**\*" />
     <EmbeddedResource Remove="FirewallManager.Tests\**\*" />
     <None Remove="FirewallManager.Tests\**\*" />
+  </ItemGroup>
+
+  <!-- 排除备份目录、发布产物目录，避免被 SDK 自动包含编译 -->
+  <ItemGroup>
+    <Compile Remove="backup-pre-refactor\**\*" />
+    <Content Remove="backup-pre-refactor\**\*" />
+    <EmbeddedResource Remove="backup-pre-refactor\**\*" />
+    <None Remove="backup-pre-refactor\**\*" />
+    <Compile Remove="publish\**\*" />
+    <Content Remove="publish\**\*" />
+    <EmbeddedResource Remove="publish\**\*" />
+    <None Remove="publish\**\*" />
+    <Compile Remove="release\**\*" />
+    <Content Remove="release\**\*" />
+    <EmbeddedResource Remove="release\**\*" />
+    <None Remove="release\**\*" />
   </ItemGroup>
 
 </Project>

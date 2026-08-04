@@ -82,10 +82,6 @@ namespace FirewallManager
     // Notify icon: Used to display program icon in system tray
     private System.Windows.Forms.NotifyIcon trayIcon;
 
-    // 文件夹浏览器对话框：用于选择要监控的文件夹
-    // Folder browser dialog: Used to select folders to monitor
-    private System.Windows.Forms.FolderBrowserDialog folderBrowserDialog;
-
     // 文件对话框：用于选择单个EXE文件
     // Open file dialog: Used to select individual EXE files
     private System.Windows.Forms.OpenFileDialog openFileDialog;
@@ -170,8 +166,6 @@ namespace FirewallManager
             this.progressBar = new System.Windows.Forms.ProgressBar();
             // 初始化状态标签：显示当前程序状态
             this.statusLabel = new System.Windows.Forms.Label();
-            // 初始化文件夹浏览器对话框：用于选择要监控的文件夹
-            this.folderBrowserDialog = new System.Windows.Forms.FolderBrowserDialog();
             // 初始化文件对话框：用于选择单个EXE文件
             this.openFileDialog = new System.Windows.Forms.OpenFileDialog();
             // 初始化列表框上下文菜单：用于列表框的右键菜单

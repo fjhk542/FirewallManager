@@ -420,14 +420,6 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 记录调试日志
-        /// </summary>
-        public static void Debug(string message)
-        {
-            Log(LogLevel.Debug, message);
-        }
-
-        /// <summary>
         /// 记录信息日志
         /// </summary>
         public static void Info(string message)

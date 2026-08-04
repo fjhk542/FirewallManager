@@ -257,57 +257,6 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 测试语言文件加载
-        /// </summary>
-        /// <returns>加载结果</returns>
-        public static string TestLanguageLoading()
-        {
-            try
-            {
-                string result = $"{LangManager.GetText("logMessages.langManager.testLoad")}\n";
-                
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string languageDir = Path.Combine(baseDir, Config.LANGUAGE_DIR);
-                
-                result += $"{LangManager.GetText("logMessages.langManager.baseDir", baseDir)}\n";
-                result += $"{LangManager.GetText("logMessages.langManager.languageDir", languageDir)}\n";
-                
-                if (Directory.Exists(languageDir))
-                {
-                    result += $"{LangManager.GetText("logMessages.langManager.dirExists")}\n";
-                    
-                    var files = Directory.GetFiles(languageDir, "*.json");
-                    result += $"{LangManager.GetText("logMessages.langManager.foundFiles", files.Length)}\n";
-                    
-                    foreach (var file in files)
-                    {
-                        result += $"{LangManager.GetText("logMessages.langManager.file", file)}\n";
-                    }
-                }
-                else
-                {
-                    result += $"{LangManager.GetText("logMessages.langManager.dirNotExists")}\n";
-                }
-                
-                // Check loaded language resources
-                lock (resourceLock)
-                {
-                    result += $"\n{LangManager.GetText("logMessages.langManager.loadedResources", languageResources.Count)}\n";
-                    foreach (var lang in languageResources.Keys)
-                    {
-                        result += $"- {lang}\n";
-                    }
-                }
-                
-                return result;
-            }
-            catch (Exception ex)
-            {
-                return LangManager.GetText("logMessages.langManager.testFailed", ex.Message);
-            }
-        }
-
-        /// <summary>
         /// 检查语言资源是否已加载
         /// </summary>
         /// <returns>是否已加载语言资源</returns>

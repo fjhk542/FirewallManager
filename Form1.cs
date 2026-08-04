@@ -80,6 +80,11 @@ namespace FirewallManager
         private readonly List<ScanTarget> monitoredTargets = new List<ScanTarget>();
 
         /// <summary>
+        /// 待应用的自动监控设置（从配置文件加载，UI 初始化完成后应用）
+        /// </summary>
+        private bool? pendingAutoMonitorSetting = null;
+
+        /// <summary>
         /// 当前工作状态
         /// </summary>
         private volatile WorkState currentState = WorkState.Idle;
@@ -94,11 +99,6 @@ namespace FirewallManager
         /// </summary>
         private volatile Task workTask;
 
-        /// <summary>
-        /// 任务完成事件
-        /// </summary>
-        private readonly ManualResetEvent taskCompletedEvent = new ManualResetEvent(true);
-        
         /// <summary>
         /// 暂停事件
         /// </summary>
@@ -164,7 +164,6 @@ namespace FirewallManager
                     }
                     
                     // 释放手动重置事件
-                    taskCompletedEvent?.Dispose();
                     pauseEvent?.Dispose();
                     
                     // 释放防火墙服务
@@ -279,11 +278,6 @@ namespace FirewallManager
                 LogManager.Error($"Path validation exception for '{path}': {ex.Message}", ex);
                 return null;
             }
-        }
-
-        private static bool IsSymbolicLink(string path)
-        {
-            return ComHelper.IsSymbolicLink(path);
         }
 
         private List<System.IO.FileSystemWatcher> watchers = new List<System.IO.FileSystemWatcher>();
@@ -483,6 +477,22 @@ namespace FirewallManager
                     statusLabel.Text = LangManager.GetText("status.firewallError");
                 });
             }
+
+            // 应用从配置文件恢复的自动监控设置（UI 初始化完成后）
+            if (pendingAutoMonitorSetting.HasValue)
+            {
+                bool autoMonitor = pendingAutoMonitorSetting.Value;
+                pendingAutoMonitorSetting = null;
+                if (autoMonitor && autoMonitorCheckBox.Checked != autoMonitor)
+                {
+                    // 通过设置 Checked 触发事件，不直接调用逻辑
+                    autoMonitorCheckBox.Checked = true;
+                }
+                else
+                {
+                    autoMonitorCheckBox.Checked = autoMonitor;
+                }
+            }
         }
         
         /// <summary>
@@ -603,8 +613,8 @@ namespace FirewallManager
                     return;
                 }
 
-                // 检查是否包含任何 reparse point
-                if (ComHelper.HasReparsePoint(fullPath))
+                // 检查路径链是否包含任何 reparse point（含父级目录检测，防止符号链接绕过）
+                if (ComHelper.HasReparsePointInPath(fullPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
                     return;
@@ -655,8 +665,8 @@ namespace FirewallManager
                     return;
                 }
                 
-                // 检测符号链接，防止符号链接劫持
-                if (ComHelper.HasReparsePoint(normalizedPath))
+                // 检测路径链是否包含符号链接（含父级目录检测，防止符号链接劫持绕过）
+                if (ComHelper.HasReparsePointInPath(normalizedPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", normalizedPath));
                     return;
@@ -712,8 +722,8 @@ namespace FirewallManager
                     return;
                 }
 
-                // 检查 reparse point
-                if (ComHelper.HasReparsePoint(fullPath))
+                // 检查路径链是否包含 reparse point（含父级目录检测）
+                if (ComHelper.HasReparsePointInPath(fullPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
                     return;
@@ -919,29 +929,6 @@ namespace FirewallManager
         #region 防火墙相关方法
 
         /// <summary>
-        /// 缓存防火墙规则
-        /// Cache firewall rules by syncing with actual firewall
-        /// </summary>
-        private void CacheFirewallRules()
-        {
-            try
-            {
-                LogManager.Info(LangManager.GetText("logMessages.refreshCache"));
-                
-                // 同步防火墙规则列表
-                firewallService.SyncRulesList();
-                
-                // 获取缓存的规则数量
-                var ruleNames = firewallService.GetAllRuleNames();
-                LogManager.Info(LangManager.GetText("logMessages.cachedRulesCount", ruleNames.Count));
-            }
-            catch (Exception ex)
-            {
-                LogManager.Error(LangManager.GetText("logMessages.refreshCacheFailed"), ex);
-            }
-        }
-
-        /// <summary>
         /// 加载监控文件夹
         /// Load monitored folders and sync firewall rules
         /// </summary>
@@ -970,73 +957,33 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 加载已添加的规则
-        /// Load added rules from firewall and sync with local cache
-        /// </summary>
-        private void LoadAddedRules()
-        {
-            try
-            {
-                LogManager.Info(LangManager.GetText("logMessages.loadingAddedRules"));
-                
-                // 同步本地规则列表与实际防火墙规则
-                firewallService.SyncRulesList();
-                
-                // 获取规则数量
-                var ruleNames = firewallService.GetAllRuleNames();
-                LogManager.Info(LangManager.GetText("logMessages.syncedRulesCount", ruleNames.Count));
-            }
-            catch (Exception ex)
-            {
-                LogManager.Error(LangManager.GetText("logMessages.loadingRulesFailed"), ex);
-                // 向用户反馈错误
-                this.Invoke((MethodInvoker)delegate
-                {
-                    MessageBox.Show(LangManager.GetText("logMessages.loadingRulesFailed"), LangManager.GetText("messages.pathErrorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                });
-            }
-        }
-
-        /// <summary>
         /// 保存监控目标到配置文件
         /// Save monitored targets to config file
+        /// 使用 TargetStore v2 schema，持久化 language 和 autoMonitor
         /// </summary>
         private void SaveMonitoredTargets()
         {
             try
             {
                 string configPath = Config.GetAppDataFilePath(Config.CONFIG_FILE);
-                string configDir = Path.GetDirectoryName(configPath);
-                if (string.IsNullOrEmpty(configDir))
-                {
-                    LogManager.Error($"Invalid config path: {configPath}");
-                    return;
-                }
-                if (!Directory.Exists(configDir))
-                {
-                    Directory.CreateDirectory(configDir);
-                }
 
-                var targets = monitoredTargets.Select(t => t.Path).ToList();
-                string json = JsonSerializer.Serialize(targets, new JsonSerializerOptions { WriteIndented = true });
-                ComHelper.AtomicWriteAllText(configPath, json, Config.Utf8NoBom);
-
-                // 保存后立即更新完整性校验值
-                if (!Config.SaveConfigIntegrityHash(configPath))
+                // 收集当前状态
+                var data = new TargetStore.ConfigData
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.configIntegrityHashSaveFailed"));
-                }
-                else
-                {
-                    LogManager.Info(LangManager.GetText("logMessages.configIntegrityHashSaved"));
-                }
+                    Language = LangManager.GetCurrentLanguage(),
+                    AutoMonitor = autoMonitorCheckBox.Checked,
+                    Targets = monitoredTargets.Select(t => t.Path).ToList()
+                };
 
-                LogManager.Info(LangManager.GetText("logMessages.monitoringTargetsSaved"));
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                LogManager.Error(LangManager.GetText("logMessages.saveMonitoringTargetsFailed") + " - Access denied", ex);
-                MessageBox.Show(LangManager.GetText("messages.saveFailedAccessDenied"), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!TargetStore.Save(configPath, data))
+                {
+                    // 保存失败时提示用户
+                    MessageBox.Show(
+                        LangManager.GetText("messages.saveMonitoringTargetsFailed", "Save failed"),
+                        LangManager.GetText("messages.errorTitle"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
             }
             catch (Exception ex)
             {
@@ -1048,6 +995,7 @@ namespace FirewallManager
         /// <summary>
         /// 加载监控目标从配置文件
         /// Load monitored targets from config file
+        /// 使用 TargetStore v2 schema，恢复 language 和 autoMonitor
         /// </summary>
         private void LoadMonitoredTargets()
         {
@@ -1056,101 +1004,100 @@ namespace FirewallManager
                 string configPath = Config.GetAppDataFilePath(Config.CONFIG_FILE);
                 LogManager.Info($"Loading monitored targets from: {configPath}");
 
-                if (File.Exists(configPath))
-                {
-                    // 加载前验证配置文件完整性（原子操作，防止TOCTOU攻击）
-                    string json;
-                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json))
-                    {
-                        LogManager.Error(LangManager.GetText("logMessages.configIntegrityVerificationFailed"));
-                        MessageBox.Show(
-                            LangManager.GetText("messages.configIntegrityVerificationFailed"),
-                            LangManager.GetText("messages.warningTitle"),
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Warning);
-                        return;
-                    }
-
-                    LogManager.Info($"Config file content length: {json.Length} characters");
-
-                    if (string.IsNullOrWhiteSpace(json))
-                    {
-                        LogManager.Warning("Config file is empty");
-                        return;
-                    }
-
-                    var paths = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions);
-
-                    if (paths == null)
-                    {
-                        LogManager.Warning("Failed to deserialize paths from config file");
-                        return;
-                    }
-
-                    // 验证反序列化结果中的每个元素都是字符串类型
-                    // 防止配置文件被篡改为嵌套对象或其他类型导致异常
-                    foreach (var p in paths)
-                    {
-                        if (p == null)
-                        {
-                            LogManager.Warning("Config file contains null entry, skipping");
-                            continue;
-                        }
-                    }
-
-                    int addedCount = 0;
-                    int skippedCount = 0;
-                    foreach (var path in paths)
-                    {
-                        if (path == null) continue;
-
-                        // 使用 NormalizeAndValidatePath 验证每个路径
-                        // 防止配置文件中包含符号链接、Junction、扩展长度路径等绕过攻击
-                        bool isDir = Directory.Exists(path);
-                        bool isExeFile = !isDir && File.Exists(path) &&
-                                         path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-                        bool isDirectory = isDir;
-                        bool isFile = isExeFile;
-
-                        string normalizedPath = NormalizeAndValidatePath(path, isDirectory || isFile);
-                        if (normalizedPath == null)
-                        {
-                            LogManager.Warning($"Path failed validation, skipping: {path}");
-                            skippedCount++;
-                            continue;
-                        }
-
-                        bool exists = Directory.Exists(normalizedPath) ||
-                                      (File.Exists(normalizedPath) &&
-                                       normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
-                        bool alreadyAdded = monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase));
-
-                        if (exists && !alreadyAdded)
-                        {
-                            var target = new ScanTarget(normalizedPath);
-                            monitoredTargets.Add(target);
-                            folderListBox.Items.Add(target);
-                            addedCount++;
-                        }
-                        else
-                        {
-                            skippedCount++;
-                            if (!exists)
-                            {
-                                LogManager.Warning($"Path no longer exists, skipping: {normalizedPath}");
-                            }
-                            else if (alreadyAdded)
-                            {
-                                LogManager.Warning($"Path already added, skipping: {normalizedPath}");
-                            }
-                        }
-                    }
-                    LogManager.Info(LangManager.GetText("logMessages.loadedMonitorTargetsFromConfig", addedCount, skippedCount));
-                }
-                else
+                if (!File.Exists(configPath))
                 {
                     LogManager.Info("Config file does not exist, no targets to load");
+                    return;
                 }
+
+                // 使用 TargetStore 加载（含完整性校验和 v1 自动迁移）
+                var data = TargetStore.Load(configPath);
+                if (data == null)
+                {
+                    // 完整性校验失败或解析失败
+                    MessageBox.Show(
+                        LangManager.GetText("messages.configIntegrityVerificationFailed"),
+                        LangManager.GetText("messages.warningTitle"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // 恢复语言设置（v2 schema 才有）
+                if (!string.IsNullOrEmpty(data.Language))
+                {
+                    string currentLang = LangManager.GetCurrentLanguage();
+                    if (!string.Equals(currentLang, data.Language, StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogManager.Info($"Restoring language setting: {data.Language}");
+                        LangManager.SetLanguage(data.Language);
+                    }
+                }
+
+                // 恢复自动监控开关（v2 schema 才有）
+                // 注意：此处仅设置状态，不立即启动监控（避免在 UI 初始化前触发）
+                pendingAutoMonitorSetting = data.AutoMonitor;
+
+                // 加载监控目标路径
+                if (data.Targets == null || data.Targets.Count == 0)
+                {
+                    LogManager.Info("No targets in config file");
+                    return;
+                }
+
+                int addedCount = 0;
+                int skippedCount = 0;
+                foreach (var path in data.Targets)
+                {
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        LogManager.Warning("Config file contains null/empty entry, skipping");
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // 使用 NormalizeAndValidatePath 验证每个路径
+                    // 防止配置文件中包含符号链接、Junction、扩展长度路径等绕过攻击
+                    bool isDir = Directory.Exists(path);
+                    bool isExeFile = !isDir && File.Exists(path) &&
+                                     path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+                    bool isDirectory = isDir;
+                    bool isFile = isExeFile;
+
+                    string normalizedPath = NormalizeAndValidatePath(path, isDirectory || isFile);
+                    if (normalizedPath == null)
+                    {
+                        LogManager.Warning($"Path failed validation, skipping: {path}");
+                        skippedCount++;
+                        continue;
+                    }
+
+                    bool exists = Directory.Exists(normalizedPath) ||
+                                  (File.Exists(normalizedPath) &&
+                                   normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+                    bool alreadyAdded = monitoredTargets.Any(t => t.Path.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase));
+
+                    if (exists && !alreadyAdded)
+                    {
+                        var target = new ScanTarget(normalizedPath);
+                        monitoredTargets.Add(target);
+                        folderListBox.Items.Add(target);
+                        addedCount++;
+                    }
+                    else
+                    {
+                        skippedCount++;
+                        if (!exists)
+                        {
+                            LogManager.Warning($"Path no longer exists, skipping: {normalizedPath}");
+                        }
+                        else if (alreadyAdded)
+                        {
+                            LogManager.Warning($"Path already added, skipping: {normalizedPath}");
+                        }
+                    }
+                }
+                LogManager.Info(LangManager.GetText("logMessages.loadedMonitorTargetsFromConfig", addedCount, skippedCount));
             }
             catch (JsonException ex)
             {
@@ -1163,7 +1110,7 @@ namespace FirewallManager
                 MessageBox.Show(LangManager.GetText("messages.loadMonitoringTargetsFailed", ex.Message), LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-        
+
         /// <summary>
         /// 查看规则详情
         /// View rule details
@@ -1204,10 +1151,7 @@ namespace FirewallManager
             {
                 if (selectedTarget.IsExe)
                 {
-                    string fileName = Path.GetFileNameWithoutExtension(selectedTarget.Path);
-                    string sanitizedFileName = firewallService.SanitizeRuleName(fileName);
-                    string pathHash = firewallService.GetPathHash(selectedTarget.Path);
-                    string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                    string ruleName = RuleNamingService.BuildRuleName(selectedTarget.Path);
                     ViewRuleDetails(ruleName);
                 }
                 else
@@ -1413,10 +1357,7 @@ namespace FirewallManager
                     }
                     else
                     {
-                        string fileName = Path.GetFileNameWithoutExtension(selectedTarget.Path);
-                        string sanitizedFileName = firewallService.SanitizeRuleName(fileName);
-                        string pathHash = firewallService.GetPathHash(selectedTarget.Path);
-                        string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                        string ruleName = RuleNamingService.BuildRuleName(selectedTarget.Path);
                         if (firewallService.CheckRuleExists(ruleName))
                         {
                             firewallService.DeleteRule(ruleName);
@@ -1547,6 +1488,9 @@ namespace FirewallManager
                     trayIcon.ShowBalloonTip(2000, LangManager.GetText("app.trayTitle"), LangManager.GetText("messages.languageChanged"), ToolTipIcon.Info);
                     
                     LogManager.Info($"Language changed to {newLanguage}");
+
+                    // 持久化语言设置到配置文件
+                    SaveMonitoredTargets();
                 }
             }
             catch (Exception ex)
@@ -1647,7 +1591,6 @@ namespace FirewallManager
             if (currentState != WorkState.Idle) return;
 
             SafeRecreateCancellationTokenSource();
-            taskCompletedEvent.Reset();
 
             workTask = Task.Run(async () =>
             {
@@ -1657,7 +1600,7 @@ namespace FirewallManager
                 }
                 finally
                 {
-                    taskCompletedEvent.Set();
+                    // 任务完成处理（taskCompletedEvent 已移除，状态由 UpdateUI 管理）
                 }
             }, cancellationTokenSource.Token);
 
@@ -1902,10 +1845,6 @@ namespace FirewallManager
             public string Path { get; set; }
             public bool IsExe { get; set; }
         }
-
-        #endregion
-
-        #region 托盘图标事件
 
         #endregion
 
