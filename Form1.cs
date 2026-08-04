@@ -1010,14 +1010,14 @@ namespace FirewallManager
                     return;
                 }
 
-                // 使用 TargetStore 加载（含完整性校验和 v1 自动迁移）
+                // 使用 TargetStore 加载（含完整性校验、降级回退和 v1 自动迁移）
                 var data = TargetStore.Load(configPath);
                 if (data == null)
                 {
-                    // 完整性校验失败或解析失败
+                    // 配置文件无法读取或解析（可能已损坏）
                     MessageBox.Show(
-                        LangManager.GetText("messages.configIntegrityVerificationFailed"),
-                        LangManager.GetText("messages.warningTitle"),
+                        LangManager.GetText("messages.configLoadFailed"),
+                        LangManager.GetText("messages.errorTitle"),
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
                     return;
@@ -1590,6 +1590,9 @@ namespace FirewallManager
         {
             if (currentState != WorkState.Idle) return;
 
+            // 诊断日志：确认监控目标和防火墙状态
+            LogManager.Info($"[诊断] 开始更新规则 - 监控目标数量={monitoredTargets.Count}");
+
             SafeRecreateCancellationTokenSource();
 
             workTask = Task.Run(async () =>
@@ -1718,12 +1721,32 @@ namespace FirewallManager
                         return;
                     }
 
+                    // 验证文件大小，防止DoS攻击（最大5MB）
+                    const long maxConfigFileSize = 5 * 1024 * 1024;
+                    FileInfo fileInfo = new FileInfo(importPath);
+                    if (fileInfo.Length > maxConfigFileSize)
+                    {
+                        LogManager.Warning($"Config file too large: {fileInfo.Length} bytes (max {maxConfigFileSize / 1024 / 1024}MB)");
+                        MessageBox.Show(
+                            LangManager.GetText("messages.importConfigFileTooLarge", maxConfigFileSize / 1024 / 1024),
+                            LangManager.GetText("messages.errorTitle"),
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+
                     // 读取配置文件
                     string json;
                     try
                     {
                         using (var fs = File.Open(importPath, FileMode.Open, FileAccess.Read, FileShare.None))
                         {
+                            // 再次校验长度（防止TOCTOU）
+                            if (fs.Length > maxConfigFileSize)
+                            {
+                                throw new Exception("Config file size exceeded limit");
+                            }
+
                             byte[] configBytes = new byte[fs.Length];
                             int bytesRead = fs.Read(configBytes, 0, configBytes.Length);
                             if (bytesRead != configBytes.Length)

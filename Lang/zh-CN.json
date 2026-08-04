@@ -130,8 +130,10 @@
     "importConfigInvalidTitle": "错误",
     "importConfigVersionMismatch": "配置文件版本不兼容",
     "importConfigVersionMismatchTitle": "错误",
+    "importConfigFileTooLarge": "配置文件过大，最大允许 {0}MB",
     "selectConfigFile": "选择配置文件",
-    "configFileFilter": "配置文件 (*.json)|*.json|所有文件 (*.*)|*.*"
+    "configFileFilter": "配置文件 (*.json)|*.json|所有文件 (*.*)|*.*",
+    "configLoadFailed": "加载配置文件失败，文件可能已损坏"
   },
   "status": {
     "ready": "就绪",

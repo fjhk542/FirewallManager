@@ -417,6 +417,7 @@ namespace FirewallManager
             { "logMessages.hmacKeyGenerated", "HMAC key generated and saved with DPAPI protection" },
             { "logMessages.hmacKeySaveFailed", "Failed to save HMAC key: {0}" },
             { "messages.configIntegrityVerificationFailed", "Configuration file may have been tampered. Loading aborted for security." },
+            { "messages.configLoadFailed", "Failed to load configuration file. The file may be corrupted." },
             { "messages.securityWarningTitle", "Security Warning" },
             { "messages.ruleActionAllowWarning", "WARNING: Changing rule action to Allow will permit the application to make network connections." },
             { "messages.ruleDirectionInboundWarning", "WARNING: Changing rule direction to Inbound will allow incoming connections to this application." },

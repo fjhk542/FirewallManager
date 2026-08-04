@@ -139,7 +139,8 @@ namespace FirewallManager
                 }
 
                 // 使用排他句柄打开/创建日志文件，防止符号链接攻击
-                _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                // FileShare.ReadWrite 允许其他读取器（如 File.ReadLines）同时访问
+                _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
 
                 // 验证文件不是reparse point
                 FileInfo logFileInfo = new FileInfo(_logFilePath);
@@ -172,7 +173,7 @@ namespace FirewallManager
                     _logFilePath = Path.GetFullPath(_logFilePath);
 
                     // 使用排他句柄打开日志文件
-                    _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                    _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
 
                     // 设置日志文件受限ACL
                     SetLogFileSecurePermissions();
@@ -181,7 +182,7 @@ namespace FirewallManager
                 {
                     // 极端情况：使用当前目录
                     _logFilePath = Path.GetFullPath(Config.LOG_FILE_NAME);
-                    _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                    _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
                 }
                 // 静态构造函数阶段避免调用 LogManager 自身（防止递归）
                 try
@@ -471,16 +472,37 @@ namespace FirewallManager
                 if (File.Exists(_logFilePath))
                 {
                     // 优化日志读取性能，避免多次Reverse()操作
-                    var lines = File.ReadLines(_logFilePath, Encoding.UTF8);
                     var logLines = new Queue<string>(_maxLogLines + 1);
                     
-                    foreach (var line in lines)
+                    try
                     {
-                        logLines.Enqueue(line);
-                        // 保持队列大小不超过_maxLogLines
-                        if (logLines.Count > _maxLogLines)
+                        // 优先使用 FileStream + StreamReader，确保文件共享模式兼容
+                        using (var stream = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        using (var reader = new StreamReader(stream, Encoding.UTF8))
                         {
-                            logLines.Dequeue();
+                            string line;
+                            while ((line = reader.ReadLine()) != null)
+                            {
+                                logLines.Enqueue(line);
+                                if (logLines.Count > _maxLogLines)
+                                {
+                                    logLines.Dequeue();
+                                }
+                            }
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // 文件被占用时的回退：使用 File.ReadLines 自动处理
+                        System.Threading.Thread.Sleep(50);
+                        var lines = File.ReadLines(_logFilePath, Encoding.UTF8);
+                        foreach (var line in lines)
+                        {
+                            logLines.Enqueue(line);
+                            if (logLines.Count > _maxLogLines)
+                            {
+                                logLines.Dequeue();
+                            }
                         }
                     }
                     
@@ -567,8 +589,8 @@ namespace FirewallManager
                                 // 原子替换
                                 File.Replace(tempPath, _logFilePath, null);
 
-                                // 重新打开文件句柄
-                                _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+                                // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
+                                _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
                                 _logFileStream.Seek(0, SeekOrigin.End);
 
                                 // 设置ACL
@@ -629,8 +651,8 @@ namespace FirewallManager
                     // 原子替换
                     File.Replace(tempPath, _logFilePath, null);
 
-                    // 重新打开文件句柄
-                    _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+                    // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
+                    _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
                     _logFileStream.Seek(0, SeekOrigin.End);
 
                     // 设置ACL

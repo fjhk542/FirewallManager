@@ -44,6 +44,7 @@ namespace FirewallManager
 
         /// <summary>
         /// 加载配置（含完整性校验和 v1 自动迁移）
+        /// 完整性校验失败时降级为直接读取，保证向后兼容性
         /// </summary>
         /// <param name="configPath">配置文件路径</param>
         /// <returns>配置数据；加载失败返回 null</returns>
@@ -63,9 +64,30 @@ namespace FirewallManager
 
             // 加载前验证配置文件完整性（原子操作，防止TOCTOU攻击）
             string json;
-            if (!Config.VerifyConfigIntegrityAndRead(configPath, out json))
+            if (Config.VerifyConfigIntegrityAndRead(configPath, out json))
             {
-                LogManager.Error(LangManager.GetText("logMessages.configIntegrityVerificationFailed"));
+                // 完整性校验通过
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    LogManager.Warning("Config file is empty");
+                    return null;
+                }
+
+                return ParseConfig(json);
+            }
+
+            // 完整性校验失败 —— 降级处理：尝试直接读取配置文件
+            // 场景：旧版本配置无 .hmac 文件、校验文件丢失、或配置被外部编辑
+            LogManager.Warning(LangManager.GetText("logMessages.configIntegrityVerificationFailed"));
+            LogManager.Warning("Attempting fallback: reading config file directly");
+
+            try
+            {
+                json = File.ReadAllText(configPath, Config.Utf8NoBom);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"Failed to read config file for fallback: {ex.Message}");
                 return null;
             }
 
@@ -75,52 +97,83 @@ namespace FirewallManager
                 return null;
             }
 
-            return ParseConfig(json);
+            // 尝试解析配置
+            var data = ParseConfig(json);
+            if (data == null)
+            {
+                LogManager.Error("Config file integrity check failed and parsing failed, file may be corrupted");
+                return null;
+            }
+
+            // 解析成功，自动修复完整性校验
+            LogManager.Warning("Config loaded via fallback path. Integrity hash will be regenerated.");
+            Config.SaveConfigIntegrityHash(configPath);
+
+            return data;
         }
 
         /// <summary>
         /// 解析配置 JSON（支持 v1/v2 格式自动识别）
+        /// 先检测 JSON 结构再选择反序列化方式，避免 v1 数组反序列化为 v2 对象时抛异常
         /// </summary>
         /// <param name="json">JSON 字符串</param>
         /// <returns>配置数据；解析失败返回 null</returns>
         private static ConfigData ParseConfig(string json)
         {
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
             try
             {
-                // 使用统一的 SafeJsonOptions（MaxDepth=10），防止 DoS 攻击
                 var options = ComHelper.SafeJsonOptions;
 
-                // 尝试解析为 v2 schema（对象）
-                var config = JsonSerializer.Deserialize<ConfigData>(json, options);
-                if (config != null && config.Version > 0)
+                // 根据 JSON 结构判断格式：以 { 开头为 v2 对象，以 [ 开头为 v1 数组
+                string trimmed = json.TrimStart();
+
+                if (trimmed.StartsWith("{"))
                 {
-                    // 深入防御：验证 language 字段格式（只允许字母数字和连字符，防止路径遍历）
-                    if (!string.IsNullOrEmpty(config.Language) && !IsValidLanguageCode(config.Language))
+                    // v2 schema: { "version": 2, "language": "zh", ... }
+                    var config = JsonSerializer.Deserialize<ConfigData>(json, options);
+                    if (config != null && config.Version > 0)
                     {
-                        LogManager.Warning($"Invalid language code in config, ignoring: {config.Language}");
-                        config.Language = null;
+                        // 验证 language 字段格式，防止路径遍历
+                        if (!string.IsNullOrEmpty(config.Language) && !IsValidLanguageCode(config.Language))
+                        {
+                            LogManager.Warning($"Invalid language code in config, ignoring: {config.Language}");
+                            config.Language = null;
+                        }
+
+                        LogManager.Info($"Loaded config v{config.Version}: language={config.Language ?? "null"}, autoMonitor={config.AutoMonitor}, targets={config.Targets?.Count ?? 0}");
+                        return config;
                     }
 
-                    LogManager.Info($"Loaded config v{config.Version}: language={config.Language ?? "null"}, autoMonitor={config.AutoMonitor}, targets={config.Targets?.Count ?? 0}");
-                    return config;
+                    LogManager.Warning("v2 config object parsed but version is missing or invalid");
+                    return null;
                 }
-
-                // 回退到 v1 schema（纯字符串数组）
-                var paths = JsonSerializer.Deserialize<List<string>>(json, options);
-                if (paths != null)
+                else if (trimmed.StartsWith("["))
                 {
-                    LogManager.Info("Loaded config v1 (legacy array format), migrating to v2");
-                    return new ConfigData
+                    // v1 schema: ["path1", "path2", ...]
+                    var paths = JsonSerializer.Deserialize<List<string>>(json, options);
+                    if (paths != null)
                     {
-                        Version = CurrentVersion,
-                        Language = null, // v1 不含语言设置
-                        AutoMonitor = false, // v1 不含自动监控设置
-                        Targets = paths
-                    };
-                }
+                        LogManager.Info("Loaded config v1 (legacy array format), migrating to v2");
+                        return new ConfigData
+                        {
+                            Version = CurrentVersion,
+                            Language = null,
+                            AutoMonitor = false,
+                            Targets = paths
+                        };
+                    }
 
-                LogManager.Warning("Failed to deserialize config");
-                return null;
+                    LogManager.Warning("v1 config array parsed but paths list is null");
+                    return null;
+                }
+                else
+                {
+                    LogManager.Warning($"Unknown config JSON format (starts with: {trimmed[0]})");
+                    return null;
+                }
             }
             catch (JsonException ex)
             {

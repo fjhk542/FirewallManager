@@ -616,6 +616,9 @@ namespace FirewallManager
 
             try
             {
+                // 诊断日志
+                LogManager.Info($"[诊断] UpdateFirewallRules 被调用 - targets.Count={monitoredTargets?.Count ?? 0}, firewallPolicy==null={firewallPolicy == null}");
+                
                 LogManager.Info(LangManager.GetText("logMessages.updatingRules"));
                 updateUI("Running", LangManager.GetText("status.scanningTargets"));
 
@@ -839,15 +842,12 @@ namespace FirewallManager
 
                 LogManager.Info(LangManager.GetText("logMessages.removingFolderRules", folderPath, exeFiles.Count));
 
-                // 为每个可执行文件生成规则名称并删除
+                // 为每个可执行文件生成规则名称并删除（使用 RuleNamingService 保证一致性）
                 foreach (var exeFile in exeFiles)
                 {
                     try
                     {
-                        string fileName = System.IO.Path.GetFileNameWithoutExtension(exeFile);
-                        string sanitizedFileName = SanitizeRuleName(fileName);
-                        string pathHash = GetPathHash(exeFile);
-                        string ruleName = $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
+                        string ruleName = RuleNamingService.BuildRuleName(exeFile);
 
                         // 检查规则是否存在
                         if (CheckRuleExists(ruleName))
