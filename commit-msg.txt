@@ -1,22 +1,8 @@
-Refactor(P0): 重构实施 - 死代码清理 + 规则命名收敛 + 配置 schema v2
+Security: P0 重构后安全审核修复
 
-D1-D13: 删除死代码
-- Form1: CacheFirewallRules/LoadAddedRules/folderBrowserDialog/IsSymbolicLink/空region/taskCompletedEvent
-- ComHelper: ValidateComObjectWithClsid/GetFinalPathNameByHandle P/Invoke
-- LangManager: TestLanguageLoading
-- LogManager: Debug()
-- WhitelistForm: lastModifiedTime
-- csproj: LanguageDiagnostic Remove 项
+TargetStore: language 字段格式验证（防路径遍历）
+- 新增 IsValidLanguageCode() 只允许字母数字和连字符
+- 使用统一 SafeJsonOptions 替代局部 JsonSerializerOptions
 
-RuleNamingService: 新增规则命名服务，5处重复构建收敛为1处统一入口
-- BuildRuleName/SanitizeRuleName/GetPathHash/IsRuleCreatedByUs
-
-U1 接线: HasReparsePointInPath 接入 3 处 watcher 事件
-- 含父级目录检测，防止符号链接绕过
-
-TargetStore: 新增配置持久化服务，schema v2 升级
-- 持久化 language/autoMonitor/targets
-- 兼容 v1 纯数组格式，自动迁移
-
-版本号对齐: csproj 1.7.0.0 -> 1.9.0.0
-csproj: 排除 backup/publish/release 目录避免误编译
+审核结论: RuleNamingService/LogManager/ComHelper 等修改文件
+未发现新的高危漏洞

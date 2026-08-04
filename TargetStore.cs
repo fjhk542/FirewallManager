@@ -87,16 +87,20 @@ namespace FirewallManager
         {
             try
             {
-                var options = new JsonSerializerOptions
-                {
-                    MaxDepth = 10,
-                    ReadCommentHandling = JsonCommentHandling.Skip
-                };
+                // 使用统一的 SafeJsonOptions（MaxDepth=10），防止 DoS 攻击
+                var options = ComHelper.SafeJsonOptions;
 
                 // 尝试解析为 v2 schema（对象）
                 var config = JsonSerializer.Deserialize<ConfigData>(json, options);
                 if (config != null && config.Version > 0)
                 {
+                    // 深入防御：验证 language 字段格式（只允许字母数字和连字符，防止路径遍历）
+                    if (!string.IsNullOrEmpty(config.Language) && !IsValidLanguageCode(config.Language))
+                    {
+                        LogManager.Warning($"Invalid language code in config, ignoring: {config.Language}");
+                        config.Language = null;
+                    }
+
                     LogManager.Info($"Loaded config v{config.Version}: language={config.Language ?? "null"}, autoMonitor={config.AutoMonitor}, targets={config.Targets?.Count ?? 0}");
                     return config;
                 }
@@ -123,6 +127,26 @@ namespace FirewallManager
                 LogManager.Error($"Config JSON parse failed: {ex.Message}", ex);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// 验证语言代码格式（只允许字母、数字和连字符，最大长度 16）
+        /// 防止路径遍历和注入攻击
+        /// </summary>
+        /// <param name="languageCode">语言代码</param>
+        /// <returns>是否有效</returns>
+        private static bool IsValidLanguageCode(string languageCode)
+        {
+            if (string.IsNullOrEmpty(languageCode) || languageCode.Length > 16)
+                return false;
+
+            foreach (char c in languageCode)
+            {
+                if (!char.IsLetterOrDigit(c) && c != '-' && c != '_')
+                    return false;
+            }
+
+            return true;
         }
 
         /// <summary>
