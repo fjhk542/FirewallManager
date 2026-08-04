@@ -26,9 +26,7 @@
     "updateRulesTray": "Update Rules",
     "exit": "Exit",
     "save": "Save",
-    "cancel": "Cancel",
-    "exportConfig": "Export Config",
-    "importConfig": "Import Config"
+    "cancel": "Cancel"
   },
   "menu": {
     "paste": "Paste",
@@ -102,22 +100,6 @@
     "saveMonitoringTargetsFailed": "Failed to save monitoring targets: {0}",
     "loadMonitoringTargetsFailed": "Failed to load monitoring targets: {0}",
     "loadMonitoringTargetsFailedJson": "Failed to load monitoring targets (invalid JSON format): {0}",
-    "exportConfigSuccess": "Config exported successfully",
-    "exportConfigSuccessTitle": "Success",
-    "exportConfigFailed": "Failed to export config: {0}",
-    "exportConfigFailedTitle": "Error",
-    "importConfigSuccess": "Config imported successfully",
-    "importConfigSuccessTitle": "Success",
-    "importConfigFailed": "Failed to import config: {0}",
-    "importConfigFailedTitle": "Error",
-    "importConfigConfirm": "Are you sure you want to import the config? This will overwrite the current monitoring targets.",
-    "importConfigConfirmTitle": "Confirm Import",
-    "importConfigInvalid": "Invalid config file format",
-    "importConfigInvalidTitle": "Error",
-    "importConfigVersionMismatch": "Config file version is incompatible",
-    "importConfigVersionMismatchTitle": "Error",
-    "selectConfigFile": "Select config file",
-    "configFileFilter": "Config files (*.json)|*.json|All files (*.*)|*.*",
     "selectExeFile": "Select executable file",
     "viewRulesDetailsFailed": "Failed to view rule details: {0}",
     "viewRulesDetailsFailedTitle": "Error",
@@ -303,9 +285,7 @@
     "exitCleanupFailed": "Failed to clean up resources on exit",
     "certificateOnlineRevocationCheckFailed": "Online certificate revocation check failed: {0}",
     "certificateOfflineRevocationCheckFailed": "Offline certificate revocation check failed: {0}",
-    "signatureIntegrityCheckFailed": "Signature integrity check failed: {0}",
-    "exportConfigFailed": "Failed to export config: {0}",
-    "importConfigFailed": "Failed to import config: {0}"
+    "signatureIntegrityCheckFailed": "Signature integrity check failed: {0}"
   },
   "forms": {
     "logsForm": "Firewall Manager Logs",
