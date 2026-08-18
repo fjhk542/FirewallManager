@@ -169,7 +169,14 @@ namespace FirewallManager
                         using (var fs = File.Open(keyFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                         {
                             byte[] encryptedKey = new byte[fs.Length];
-                            fs.Read(encryptedKey, 0, encryptedKey.Length);
+                            int totalRead = 0;
+                            while (totalRead < encryptedKey.Length)
+                            {
+                                int bytesRead = fs.Read(encryptedKey, totalRead, encryptedKey.Length - totalRead);
+                                if (bytesRead == 0)
+                                    throw new EndOfStreamException("Unexpected end of file while reading HMAC key");
+                                totalRead += bytesRead;
+                            }
                             byte[] decryptedKey = ProtectedData.Unprotect(encryptedKey, null, DataProtectionScope.CurrentUser);
                             if (decryptedKey != null && decryptedKey.Length >= 32)
                             {
@@ -190,7 +197,7 @@ namespace FirewallManager
                 {
                     byte[] encryptedKey = ProtectedData.Protect(newKey, null, DataProtectionScope.CurrentUser);
                     ComHelper.AtomicWriteAllBytes(keyFilePath, encryptedKey);
-                    SetSecureFilePermissions(keyFilePath);
+                    ComHelper.SetSecureFilePermissionsInternal(keyFilePath);
                     LogManager.Info(LangManager.GetText("logMessages.hmacKeyGenerated"));
                 }
                 catch (Exception ex)
@@ -217,14 +224,22 @@ namespace FirewallManager
                 {
                     string machineGuid = Microsoft.Win32.Registry.GetValue(
                         @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography", "MachineGuid", null) as string;
-                    if (!string.IsNullOrEmpty(machineGuid))
+                    if (!string.IsNullOrEmpty(machineGuid) && IsValidGuidFormat(machineGuid))
                     {
                         machineKey = machineGuid + HMAC_KEY_TAG;
                     }
+                    else
+                    {
+                        // 如果 MachineGuid 不可用或格式无效，使用回退机制
+                        LogManager.Info("MachineGuid not available or invalid, using fallback key generation");
+                        machineKey = GenerateFallbackMachineKey();
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // 无法读取 MachineGuid 时使用默认标记
+                    // 无法读取 MachineGuid 时使用回退机制
+                    LogManager.Warning($"Failed to read MachineGuid: {ex.Message}, using fallback key generation");
+                    machineKey = GenerateFallbackMachineKey();
                 }
 
                 byte[] randomEntropy = new byte[32];
@@ -253,6 +268,54 @@ namespace FirewallManager
         }
 
         /// <summary>
+        /// 验证 GUID 格式是否有效
+        /// </summary>
+        private static bool IsValidGuidFormat(string guidString)
+        {
+            if (string.IsNullOrEmpty(guidString))
+                return false;
+                
+            return Guid.TryParse(guidString, out _);
+        }
+
+        /// <summary>
+        /// 生成回退机器密钥（当 MachineGuid 不可用时）
+        /// 使用计算机名称和用户信息生成机器唯一标识
+        /// </summary>
+        private static string GenerateFallbackMachineKey()
+        {
+            try
+            {
+                string machineName = Environment.MachineName ?? "unknown";
+                string userName = Environment.UserName ?? "unknown";
+                string osVersion = Environment.OSVersion.VersionString ?? "unknown";
+                
+                return $"{HMAC_KEY_TAG}_{machineName}_{userName}_{osVersion}";
+            }
+            catch
+            {
+                // 最终回退到完全随机的密钥
+                return HMAC_KEY_TAG + "_" + Guid.NewGuid().ToString();
+            }
+        }
+
+        /// <summary>
+        /// 计算字节数组的 HMAC-SHA256 完整性校验值
+        /// 使用 Convert.ToHexString 替代手动 StringBuilder 拼接，与 RuleNamingService 保持一致
+        /// </summary>
+        /// <param name="data">待计算的字节数据</param>
+        /// <param name="key">HMAC 密钥</param>
+        /// <returns>小写十六进制字符串</returns>
+        private static string ComputeHmacHex(byte[] data, byte[] key)
+        {
+            using (var hmac = new HMACSHA256(key))
+            {
+                byte[] hashBytes = hmac.ComputeHash(data);
+                return Convert.ToHexString(hashBytes).ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
         /// 计算文件的 HMAC-SHA256 完整性校验值
         /// </summary>
         /// <param name="filePath">文件路径</param>
@@ -266,18 +329,9 @@ namespace FirewallManager
                     return null;
                 }
 
+                byte[] fileBytes = File.ReadAllBytes(filePath);
                 byte[] key = GenerateHmacKey();
-                using (var hmac = new HMACSHA256(key))
-                {
-                    byte[] fileBytes = File.ReadAllBytes(filePath);
-                    byte[] hashBytes = hmac.ComputeHash(fileBytes);
-                    StringBuilder sb = new StringBuilder(hashBytes.Length * 2);
-                    foreach (byte b in hashBytes)
-                    {
-                        sb.Append(b.ToString("x2"));
-                    }
-                    return sb.ToString();
-                }
+                return ComputeHmacHex(fileBytes, key);
             }
             catch
             {
@@ -379,32 +433,30 @@ namespace FirewallManager
                         using (var configFs = File.Open(configFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                         {
                             byte[] configBytes = new byte[configFs.Length];
-                            configFs.Read(configBytes, 0, configBytes.Length);
+                            int totalRead = 0;
+                            while (totalRead < configBytes.Length)
+                            {
+                                int bytesRead = configFs.Read(configBytes, totalRead, configBytes.Length - totalRead);
+                                if (bytesRead == 0)
+                                    throw new EndOfStreamException("Unexpected end of file while reading config");
+                                totalRead += bytesRead;
+                            }
 
                             byte[] key = GenerateHmacKey();
-                            using (var hmac = new HMACSHA256(key))
+                            string computedHash = ComputeHmacHex(configBytes, key);
+
+                            if (!string.Equals(savedHash, computedHash, StringComparison.OrdinalIgnoreCase))
                             {
-                                byte[] hashBytes = hmac.ComputeHash(configBytes);
-                                StringBuilder sb = new StringBuilder(hashBytes.Length * 2);
-                                foreach (byte b in hashBytes)
-                                {
-                                    sb.Append(b.ToString("x2"));
-                                }
-                                string computedHash = sb.ToString();
-
-                                if (!string.Equals(savedHash, computedHash, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    return false;
-                                }
-
-                                // 验证通过后才返回内容，确保没有TOCTOU窗口
-                                // 使用 StreamReader 读取内容以自动处理 BOM
-                                using (var streamReader = new StreamReader(new MemoryStream(configBytes), Encoding.UTF8, true))
-                                {
-                                    content = streamReader.ReadToEnd();
-                                }
-                                return true;
+                                return false;
                             }
+
+                            // 验证通过后才返回内容，确保没有TOCTOU窗口
+                            // 使用 StreamReader 读取内容以自动处理 BOM
+                            using (var streamReader = new StreamReader(new MemoryStream(configBytes), Encoding.UTF8, true))
+                            {
+                                content = streamReader.ReadToEnd();
+                            }
+                            return true;
                         }
                     }
                 }
@@ -419,44 +471,12 @@ namespace FirewallManager
         /// <summary>
         /// 为敏感配置文件设置受限ACL权限（仅管理员和SYSTEM可访问）
         /// 防止低权限用户篡改白名单、配置等关键文件
+        /// 实际实现委托到 ComHelper.SetSecureFilePermissionsInternal，消除重复代码
         /// </summary>
         /// <param name="filePath">要保护的文件路径</param>
         public static void SetSecureFilePermissionsPublic(string filePath)
         {
-            SetSecureFilePermissions(filePath);
-        }
-
-        private static void SetSecureFilePermissions(string filePath)
-        {
-            try
-            {
-                if (!File.Exists(filePath))
-                    return;
-
-                var fileInfo = new FileInfo(filePath);
-                System.Security.AccessControl.FileSecurity fileSecurity = fileInfo.GetAccessControl();
-                fileSecurity.SetAccessRuleProtection(true, false);
-
-                System.Security.Principal.SecurityIdentifier adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-                System.Security.AccessControl.FileSystemAccessRule adminRule = new System.Security.AccessControl.FileSystemAccessRule(
-                    adminSid,
-                    System.Security.AccessControl.FileSystemRights.FullControl,
-                    System.Security.AccessControl.AccessControlType.Allow);
-                fileSecurity.AddAccessRule(adminRule);
-
-                System.Security.Principal.SecurityIdentifier systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
-                System.Security.AccessControl.FileSystemAccessRule systemRule = new System.Security.AccessControl.FileSystemAccessRule(
-                    systemSid,
-                    System.Security.AccessControl.FileSystemRights.FullControl,
-                    System.Security.AccessControl.AccessControlType.Allow);
-                fileSecurity.AddAccessRule(systemRule);
-
-                fileInfo.SetAccessControl(fileSecurity);
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warning(LangManager.GetText("logMessages.setFilePermissionsFailed", ex.Message));
-            }
+            ComHelper.SetSecureFilePermissionsInternal(filePath);
         }
     }
 }

@@ -1,8 +1,0 @@
-Security: P0 重构后安全审核修复
-
-TargetStore: language 字段格式验证（防路径遍历）
-- 新增 IsValidLanguageCode() 只允许字母数字和连字符
-- 使用统一 SafeJsonOptions 替代局部 JsonSerializerOptions
-
-审核结论: RuleNamingService/LogManager/ComHelper 等修改文件
-未发现新的高危漏洞

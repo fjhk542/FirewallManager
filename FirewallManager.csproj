@@ -6,9 +6,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Firewall.ico</ApplicationIcon>
-    <Version>1.9.0.0</Version>
-    <AssemblyVersion>1.9.0.0</AssemblyVersion>
-    <FileVersion>1.9.0.0</FileVersion>
+    <Version>1.9.2.0</Version>
+    <AssemblyVersion>1.9.2.0</AssemblyVersion>
+    <FileVersion>1.9.2.0</FileVersion>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <DebugSymbols>false</DebugSymbols>
@@ -49,6 +49,11 @@
     <Content Remove="release\**\*" />
     <EmbeddedResource Remove="release\**\*" />
     <None Remove="release\**\*" />
+    <!-- 排除 tools 子项目目录，避免其 obj/bin 中的生成文件被主项目编译，导致 AssemblyXxxAttribute 重复 -->
+    <Compile Remove="tools\**\*" />
+    <Content Remove="tools\**\*" />
+    <EmbeddedResource Remove="tools\**\*" />
+    <None Remove="tools\**\*" />
   </ItemGroup>
 
 </Project>

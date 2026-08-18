@@ -187,7 +187,7 @@ namespace FirewallManager
             {
                 IntPtr unknownPtr = Marshal.GetIUnknownForObject(obj);
                 IntPtr interfacePtr;
-                int result = Marshal.QueryInterface(unknownPtr, ref expectedIid, out interfacePtr);
+                int result = Marshal.QueryInterface(unknownPtr, in expectedIid, out interfacePtr);
                 Marshal.Release(unknownPtr);
 
                 if (result != 0 || interfacePtr == IntPtr.Zero)
@@ -206,28 +206,14 @@ namespace FirewallManager
             }
         }
 
-        internal static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default)
-        {
-            try
-            {
-                if (obj == null)
-                    return defaultValue;
-                object value = obj.GetType().InvokeMember(propertyName, BindingFlags.GetProperty, null, obj, null);
-                return value == null ? defaultValue : (T)Convert.ChangeType(value, typeof(T));
-            }
-            catch
-            {
-                return defaultValue;
-            }
-        }
-
-        internal static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue, string logPropertyName)
+        internal static T SafeGetProperty<T>(dynamic obj, string propertyName, T defaultValue = default, string logPropertyName = null)
         {
             try
             {
                 if (obj == null)
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.safeGetPropertyFailed", logPropertyName, "null object"));
+                    if (logPropertyName != null)
+                        LogManager.Warning(LangManager.GetText("logMessages.safeGetPropertyFailed", logPropertyName, "null object"));
                     return defaultValue;
                 }
                 object value = obj.GetType().InvokeMember(propertyName, BindingFlags.GetProperty, null, obj, null);
@@ -235,7 +221,8 @@ namespace FirewallManager
             }
             catch (Exception ex)
             {
-                LogManager.Warning(LangManager.GetText("logMessages.safeGetPropertyFailed", logPropertyName, ex.Message));
+                if (logPropertyName != null)
+                    LogManager.Warning(LangManager.GetText("logMessages.safeGetPropertyFailed", logPropertyName, ex.Message));
                 return defaultValue;
             }
         }
@@ -253,6 +240,25 @@ namespace FirewallManager
             {
                 LogManager.Warning(LangManager.GetText("logMessages.safeSetPropertyFailed", propertyName, ex.Message));
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 安全释放 COM 对象，异常仅记录日志不抛出
+        /// 统一实现，供 FirewallService 等模块复用
+        /// </summary>
+        internal static void ReleaseComObject(object obj)
+        {
+            if (obj == null)
+                return;
+
+            try
+            {
+                Marshal.ReleaseComObject(obj);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warning(LangManager.GetText("logMessages.releaseComObjectFailed", ex.Message));
             }
         }
 
@@ -396,9 +402,10 @@ namespace FirewallManager
             }
         }
 
+        // IO_REPARSE_TAG_MOUNT_POINT 与 IO_REPARSE_TAG_JUNCTION 在 Windows 中共享同一值 0xA0000003
+        // 此处合并为单个常量以消除冗余
         private const uint IO_REPARSE_TAG_SYMLINK = 0xA000000C;
-        private const uint IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003;
-        private const uint IO_REPARSE_TAG_JUNCTION = 0xA0000003;
+        private const uint IO_REPARSE_TAG_MOUNT_POINT_OR_JUNCTION = 0xA0000003;
 
         private static bool HasDangerousReparseTag(string path)
         {
@@ -437,9 +444,9 @@ namespace FirewallManager
                         uint reparseTag = BitConverter.ToUInt32(reparseData, 0);
                         
                         // 检查是否为危险的 reparse tag
+                        // symlink / mount point / junction 三类需要拦截
                         if (reparseTag == IO_REPARSE_TAG_SYMLINK ||
-                            reparseTag == IO_REPARSE_TAG_MOUNT_POINT ||
-                            reparseTag == IO_REPARSE_TAG_JUNCTION)
+                            reparseTag == IO_REPARSE_TAG_MOUNT_POINT_OR_JUNCTION)
                         {
                             return true;  // 检测到危险的 reparse point
                         }
@@ -553,10 +560,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 原子写入文本文件 - 先写临时文件再替换，防止写入中断导致文件损坏
+        /// 原子写入核心逻辑 - 先写临时文件再替换，防止写入中断导致文件损坏
         /// 修复：使用排他创建+随机文件名+句柄级reparse校验+受限ACL，防止符号链接攻击
+        /// AtomicWriteAllText 与 AtomicWriteAllBytes 共用此实现，消除重复代码
         /// </summary>
-        internal static void AtomicWriteAllText(string filePath, string contents, System.Text.Encoding encoding)
+        /// <param name="filePath">目标文件路径</param>
+        /// <param name="writeBytes">向临时文件写入字节数组的回调</param>
+        private static void AtomicWriteCore(string filePath, Action<FileStream> writeBytes)
         {
             // 使用随机文件名防止符号链接预判攻击
             string tempPath = Path.Combine(Path.GetDirectoryName(filePath), Path.GetRandomFileName());
@@ -572,8 +582,7 @@ namespace FirewallManager
                         throw new InvalidOperationException("临时文件是reparse point，拒绝写入");
                     }
 
-                    byte[] contentBytes = encoding.GetBytes(contents);
-                    fs.Write(contentBytes, 0, contentBytes.Length);
+                    writeBytes(fs);
                     fs.Flush();
                 }
 
@@ -605,6 +614,16 @@ namespace FirewallManager
                 catch { }
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 原子写入文本文件 - 先写临时文件再替换，防止写入中断导致文件损坏
+        /// 修复：使用排他创建+随机文件名+句柄级reparse校验+受限ACL，防止符号链接攻击
+        /// </summary>
+        internal static void AtomicWriteAllText(string filePath, string contents, System.Text.Encoding encoding)
+        {
+            byte[] contentBytes = encoding.GetBytes(contents);
+            AtomicWriteCore(filePath, fs => fs.Write(contentBytes, 0, contentBytes.Length));
         }
 
         /// <summary>
@@ -613,58 +632,14 @@ namespace FirewallManager
         /// </summary>
         internal static void AtomicWriteAllBytes(string filePath, byte[] bytes)
         {
-            // 使用随机文件名防止符号链接预判攻击
-            string tempPath = Path.Combine(Path.GetDirectoryName(filePath), Path.GetRandomFileName());
-            try
-            {
-                // 使用排他创建，确保临时文件是新建的，不存在符号链接
-                using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-                {
-                    // 检查文件句柄的属性，确认不是reparse point
-                    FileInfo tempFileInfo = new FileInfo(tempPath);
-                    if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
-                    {
-                        throw new InvalidOperationException("临时文件是reparse point，拒绝写入");
-                    }
-
-                    fs.Write(bytes, 0, bytes.Length);
-                    fs.Flush();
-                }
-
-                // 对临时文件设置受限ACL
-                SetSecureFilePermissionsInternal(tempPath);
-
-                // 原子替换或移动
-                if (File.Exists(filePath))
-                {
-                    File.Replace(tempPath, filePath, null);
-                }
-                else
-                {
-                    File.Move(tempPath, filePath);
-                }
-
-                // 对目标文件也设置受限ACL
-                SetSecureFilePermissionsInternal(filePath);
-            }
-            catch
-            {
-                try
-                {
-                    if (File.Exists(tempPath))
-                    {
-                        File.Delete(tempPath);
-                    }
-                }
-                catch { }
-                throw;
-            }
+            AtomicWriteCore(filePath, fs => fs.Write(bytes, 0, bytes.Length));
         }
 
         /// <summary>
         /// 设置文件受限ACL权限（仅管理员和SYSTEM可访问）
+        /// 统一实现，供 Config/LogManager 等模块复用，消除三处重复代码
         /// </summary>
-        private static void SetSecureFilePermissionsInternal(string filePath)
+        internal static void SetSecureFilePermissionsInternal(string filePath)
         {
             try
             {
@@ -691,9 +666,10 @@ namespace FirewallManager
 
                 fileInfo.SetAccessControl(fileSecurity);
             }
-            catch
+            catch (Exception ex)
             {
-                // ACL设置失败不应影响主要功能
+                // ACL设置失败不应影响主要功能，仅记录日志
+                LogManager.Warning(LangManager.GetText("logMessages.setFilePermissionsFailed", ex.Message));
             }
         }
 
@@ -922,7 +898,7 @@ namespace FirewallManager
                 {
                     IntPtr unknownPtr = Marshal.GetIUnknownForObject(obj);
                     IntPtr interfacePtr;
-                    int result = Marshal.QueryInterface(unknownPtr, ref expectedIidGuid, out interfacePtr);
+                    int result = Marshal.QueryInterface(unknownPtr, in expectedIidGuid, out interfacePtr);
                     Marshal.Release(unknownPtr);
 
                     if (result != 0 || interfacePtr == IntPtr.Zero)

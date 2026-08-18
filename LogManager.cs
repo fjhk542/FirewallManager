@@ -85,6 +85,31 @@ namespace FirewallManager
         private static readonly object _logLock = new object();
 
         /// <summary>
+        /// 预编译的正则表达式：控制字符（保留 \t \n \r），防止日志注入攻击
+        /// 使用静态编译避免每次调用时重新编译正则，提升性能
+        /// </summary>
+        private static readonly System.Text.RegularExpressions.Regex _controlCharsRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// 预编译的正则表达式：Unicode 控制字符（如双向文本覆盖字符），防止日志伪造
+        /// </summary>
+        private static readonly System.Text.RegularExpressions.Regex _unicodeControlCharsRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"[\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// 预编译的正则表达式：敏感信息（password/token/secret/apikey/auth）
+        /// </summary>
+        private static readonly System.Text.RegularExpressions.Regex _sensitiveInfoRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"(?<key>password|token|secret|apikey|auth)[=:]\s*[""']?[^\s""']+[""']?",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>
         /// 日志更新事件
         /// 当日志文件有新内容写入时触发，用于通知UI更新日志显示
         /// </summary>
@@ -195,38 +220,11 @@ namespace FirewallManager
 
         /// <summary>
         /// 设置日志文件受限ACL权限
+        /// 实际实现委托到 ComHelper.SetSecureFilePermissionsInternal，消除重复代码
         /// </summary>
         private static void SetLogFileSecurePermissions()
         {
-            try
-            {
-                if (!File.Exists(_logFilePath))
-                    return;
-
-                var fileInfo = new FileInfo(_logFilePath);
-                System.Security.AccessControl.FileSecurity fileSecurity = fileInfo.GetAccessControl();
-                fileSecurity.SetAccessRuleProtection(true, false);
-
-                System.Security.Principal.SecurityIdentifier adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-                System.Security.AccessControl.FileSystemAccessRule adminRule = new System.Security.AccessControl.FileSystemAccessRule(
-                    adminSid,
-                    System.Security.AccessControl.FileSystemRights.FullControl,
-                    System.Security.AccessControl.AccessControlType.Allow);
-                fileSecurity.AddAccessRule(adminRule);
-
-                System.Security.Principal.SecurityIdentifier systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
-                System.Security.AccessControl.FileSystemAccessRule systemRule = new System.Security.AccessControl.FileSystemAccessRule(
-                    systemSid,
-                    System.Security.AccessControl.FileSystemRights.FullControl,
-                    System.Security.AccessControl.AccessControlType.Allow);
-                fileSecurity.AddAccessRule(systemRule);
-
-                fileInfo.SetAccessControl(fileSecurity);
-            }
-            catch
-            {
-                // ACL设置失败不应影响主要功能
-            }
+            ComHelper.SetSecureFilePermissionsInternal(_logFilePath);
         }
 
         /// <summary>
@@ -388,16 +386,10 @@ namespace FirewallManager
             // 移除控制字符（除了常见的换行和制表符），防止日志注入攻击
             // 保留 \t (0x09), \n (0x0A), \r (0x0D) 用于格式化
             // 移除其他所有控制字符 (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F)
-            filtered = System.Text.RegularExpressions.Regex.Replace(
-                filtered,
-                @"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
-                string.Empty);
+            filtered = _controlCharsRegex.Replace(filtered, string.Empty);
             
             // 移除 Unicode 控制字符（如双向文本覆盖字符），防止日志伪造
-            filtered = System.Text.RegularExpressions.Regex.Replace(
-                filtered,
-                @"[\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]",
-                string.Empty);
+            filtered = _unicodeControlCharsRegex.Replace(filtered, string.Empty);
             
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrEmpty(userProfile))
@@ -405,11 +397,9 @@ namespace FirewallManager
                 filtered = filtered.Replace(userProfile, "[UserProfile]");
             }
             
-            filtered = System.Text.RegularExpressions.Regex.Replace(
+            filtered = _sensitiveInfoRegex.Replace(
                 filtered,
-                @"(?<key>password|token|secret|apikey|auth)[=:]\s*[""']?[^\s""']+[""']?",
-                "[" + LangManager.GetText("logMessages.logManager.sensitiveInfo") + "]",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                "[" + LangManager.GetText("logMessages.logManager.sensitiveInfo") + "]");
             
             // 用安全占位符替换换行符，防止伪造日志条目
             // 但先保留异常堆栈的格式
@@ -517,6 +507,75 @@ namespace FirewallManager
         }
 
         /// <summary>
+        /// 原子替换日志文件内容的核心逻辑
+        /// 抽取自 CheckAndCleanLogFile 与 ClearLogs，消除重复的临时文件创建/句柄切换/原子替换逻辑
+        /// 流程：创建排他临时文件 → 校验非 reparse point → 写入新内容 → 关闭当前句柄 → 原子替换 → 重开句柄 → 设置ACL
+        /// </summary>
+        /// <param name="writeContent">向临时文件写入新内容的回调；返回 false 表示拒绝写入（如 reparse point）</param>
+        /// <returns>是否替换成功</returns>
+        private static bool AtomicReplaceLogContent(Func<FileStream, bool> writeContent)
+        {
+            string tempPath = Path.Combine(Path.GetDirectoryName(_logFilePath), Path.GetRandomFileName());
+            bool rejectWrite = false;
+            try
+            {
+                // 排他创建临时文件
+                using (var tempFs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                {
+                    // 验证不是 reparse point（拒绝写入时通过标志位通知外层清理，避免在 using 块内删除已打开的文件）
+                    FileInfo tempFileInfo = new FileInfo(tempPath);
+                    if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        rejectWrite = true;
+                        return false;
+                    }
+
+                    // 写入新内容（由调用者决定写入什么）
+                    if (!writeContent(tempFs))
+                    {
+                        rejectWrite = true;
+                        return false;
+                    }
+                }
+
+                // 关闭当前持有句柄
+                if (_logFileStream != null)
+                {
+                    _logFileStream.Dispose();
+                    _logFileStream = null;
+                }
+
+                // 原子替换
+                File.Replace(tempPath, _logFilePath, null);
+
+                // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
+                _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                _logFileStream.Seek(0, SeekOrigin.End);
+
+                // 设置ACL
+                SetLogFileSecurePermissions();
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch { }
+                // 拒绝写入（如 reparse point）属于安全策略，不向上抛出
+                if (rejectWrite)
+                {
+                    return false;
+                }
+                throw;
+            }
+        }
+
+        /// <summary>
         /// 清理旧日志
         /// 当日志文件超过大小限制时，保留最新的日志内容
         /// 修复：使用原子写入防止符号链接攻击
@@ -553,61 +612,17 @@ namespace FirewallManager
                             }
 
                             // 使用原子写入替换日志内容（防止符号链接攻击）
-                            string tempPath = Path.Combine(Path.GetDirectoryName(_logFilePath), Path.GetRandomFileName());
-                            try
+                            AtomicReplaceLogContent(tempFs =>
                             {
-                                // 排他创建临时文件
-                                using (var tempFs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                                using (var writer = new StreamWriter(tempFs, Encoding.UTF8, leaveOpen: true))
                                 {
-                                    // 验证不是reparse point
-                                    FileInfo tempFileInfo = new FileInfo(tempPath);
-                                    if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                                    foreach (var line in linesToKeep)
                                     {
-                                        using (var writer = new StreamWriter(tempFs, Encoding.UTF8))
-                                        {
-                                            foreach (var line in linesToKeep)
-                                            {
-                                                writer.WriteLine(line);
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        // 删除reparse point临时文件，终止操作
-                                        File.Delete(tempPath);
-                                        return;
+                                        writer.WriteLine(line);
                                     }
                                 }
-
-                                // 关闭当前持有句柄
-                                if (_logFileStream != null)
-                                {
-                                    _logFileStream.Dispose();
-                                    _logFileStream = null;
-                                }
-
-                                // 原子替换
-                                File.Replace(tempPath, _logFilePath, null);
-
-                                // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
-                                _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-                                _logFileStream.Seek(0, SeekOrigin.End);
-
-                                // 设置ACL
-                                SetLogFileSecurePermissions();
-                            }
-                            catch
-                            {
-                                try
-                                {
-                                    if (File.Exists(tempPath))
-                                    {
-                                        File.Delete(tempPath);
-                                    }
-                                }
-                                catch { }
-                                throw;
-                            }
+                                return true;
+                            });
                         }
                     }
                 }
@@ -626,50 +641,8 @@ namespace FirewallManager
             try
             {
                 // 使用原子写入清空日志（防止符号链接攻击）
-                string tempPath = Path.Combine(Path.GetDirectoryName(_logFilePath), Path.GetRandomFileName());
-                try
-                {
-                    // 排他创建临时文件
-                    using (var tempFs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-                    {
-                        // 验证不是reparse point
-                        FileInfo tempFileInfo = new FileInfo(tempPath);
-                        if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
-                        {
-                            File.Delete(tempPath);
-                            return;
-                        }
-                    }
-
-                    // 关闭当前持有句柄
-                    if (_logFileStream != null)
-                    {
-                        _logFileStream.Dispose();
-                        _logFileStream = null;
-                    }
-
-                    // 原子替换
-                    File.Replace(tempPath, _logFilePath, null);
-
-                    // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
-                    _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-                    _logFileStream.Seek(0, SeekOrigin.End);
-
-                    // 设置ACL
-                    SetLogFileSecurePermissions();
-                }
-                catch
-                {
-                    try
-                    {
-                        if (File.Exists(tempPath))
-                        {
-                            File.Delete(tempPath);
-                        }
-                    }
-                    catch { }
-                    throw;
-                }
+                // 不写入任何内容即清空日志文件
+                AtomicReplaceLogContent(_ => true);
             }
             catch (Exception)
             {

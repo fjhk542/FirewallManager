@@ -39,6 +39,15 @@ namespace FirewallManager
         private static readonly object resourceLock = new object();
 
         /// <summary>
+        /// 预编译的正则表达式：匹配 {0}、{1} 等格式化占位符
+        /// 使用静态编译避免每次调用 GetText 时重新编译正则
+        /// </summary>
+        private static readonly System.Text.RegularExpressions.Regex _placeholderRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"\{\d+\}",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
         /// 初始化国际化管理器
         /// </summary>
         static LangManager()
@@ -181,7 +190,8 @@ namespace FirewallManager
         {
             if (depth >= _maxJsonDepth)
             {
-                LogManager.Warning(LangManager.GetText("logMessages.jsonDepthExceeded"));
+                // 直接使用硬编码消息，避免递归调用 GetText
+                LogManager.Warning("JSON parsing depth exceeded maximum limit");
                 return;
             }
 
@@ -292,7 +302,7 @@ namespace FirewallManager
                 string text = GetTextInternal(key);
                 if (!string.IsNullOrEmpty(text) && args != null && args.Length > 0)
                 {
-                    int placeholderCount = System.Text.RegularExpressions.Regex.Matches(text, @"\{\d+\}").Count;
+                    int placeholderCount = _placeholderRegex.Matches(text).Count;
                     if (placeholderCount > 0)
                     {
                         if (placeholderCount <= args.Length)

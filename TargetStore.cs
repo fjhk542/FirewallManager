@@ -183,7 +183,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证语言代码格式（只允许字母、数字和连字符，最大长度 16）
+        /// 验证语言代码格式（符合 BCP 47 标准，如 "zh", "en", "zh-CN"）
         /// 防止路径遍历和注入攻击
         /// </summary>
         /// <param name="languageCode">语言代码</param>
@@ -193,10 +193,36 @@ namespace FirewallManager
             if (string.IsNullOrEmpty(languageCode) || languageCode.Length > 16)
                 return false;
 
-            foreach (char c in languageCode)
+            // 验证符合 BCP 47 标准的语言代码格式
+            // 主要语言代码: 2-3字母，可选子标签: 2字母国家代码或3字母数字代码
+            string[] parts = languageCode.Split('-');
+            
+            // 主语言代码验证
+            if (parts.Length == 0 || string.IsNullOrEmpty(parts[0]))
+                return false;
+                
+            string primaryCode = parts[0];
+            if (primaryCode.Length < 2 || primaryCode.Length > 3)
+                return false;
+                
+            foreach (char c in primaryCode)
             {
-                if (!char.IsLetterOrDigit(c) && c != '-' && c != '_')
+                if (!char.IsLower(c) && !char.IsUpper(c))
                     return false;
+            }
+
+            // 子标签验证（国家代码、脚本等）
+            for (int i = 1; i < parts.Length; i++)
+            {
+                string subtag = parts[i];
+                if (string.IsNullOrEmpty(subtag) || subtag.Length < 2 || subtag.Length > 8)
+                    return false;
+                    
+                foreach (char c in subtag)
+                {
+                    if (!char.IsLetterOrDigit(c))
+                        return false;
+                }
             }
 
             return true;

@@ -21,9 +21,15 @@ namespace FirewallManager
         private volatile object _firewallPolicy;
 
         /// <summary>
-        /// 已添加的规则列表
+        /// 已添加的规则列表（用于有序遍历和持久化）
         /// </summary>
         private List<string> addedRules;
+
+        /// <summary>
+        /// 已添加规则的 HashSet 集合（用于 O(1) 快速查找）
+        /// 与 addedRules 保持同步，避免 CheckRuleExists 在大规则集下退化为 O(n)
+        /// </summary>
+        private HashSet<string> addedRulesLookup;
 
         /// <summary>
         /// 用于确保线程安全的锁对象
@@ -50,6 +56,7 @@ namespace FirewallManager
         public FirewallService()
         {
             addedRules = new List<string>();
+            addedRulesLookup = new HashSet<string>(StringComparer.Ordinal);
             addedRulesLock = new object();
         }
 
@@ -60,16 +67,55 @@ namespace FirewallManager
 
         private static void ReleaseComObject(dynamic obj)
         {
-            if (obj != null)
+            ComHelper.ReleaseComObject(obj);
+        }
+
+        /// <summary>
+        /// 创建防火墙规则 COM 对象并添加到防火墙策略与本地列表
+        /// 抽取自 CreateRuleForExe 与 UpdateFirewallRules，消除重复的属性设置/添加/释放逻辑
+        /// </summary>
+        /// <param name="ruleName">规则名称</param>
+        /// <param name="exePath">可执行文件路径</param>
+        /// <param name="descriptionPrefix">描述前缀（区分自动监控与手动更新）</param>
+        /// <returns>是否创建并添加成功</returns>
+        private bool CreateAndAddFirewallRule(string ruleName, string exePath, string descriptionPrefix)
+        {
+            dynamic newRule = ComHelper.CreateComObjectWithClsid(
+                Config.FIREWALL_RULE_CLSID,
+                Config.FIREWALL_RULE_IID,
+                Config.FIREWALL_RULE_PROGID);
+            if (newRule == null)
             {
-                try
+                LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
+                return false;
+            }
+
+            try
+            {
+                SafeSetProperty(newRule, "Name", ruleName);
+                SafeSetProperty(newRule, "Description", descriptionPrefix + ": " + exePath);
+                SafeSetProperty(newRule, "ApplicationName", exePath);
+                SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
+                SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
+                SafeSetProperty(newRule, "Enabled", true);
+                SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
+
+                firewallPolicy.Rules.Add(newRule);
+
+                // 添加到本地列表（HashSet 与 List 保持同步）
+                lock (addedRulesLock)
                 {
-                    Marshal.ReleaseComObject(obj);
+                    if (addedRulesLookup.Add(ruleName))
+                    {
+                        addedRules.Add(ruleName);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    LogManager.Warning(LangManager.GetText("logMessages.releaseComObjectFailed", ex.Message));
-                }
+
+                return true;
+            }
+            finally
+            {
+                ReleaseComObject(newRule);
             }
         }
 
@@ -109,6 +155,7 @@ namespace FirewallManager
                     {
                         addedRules.Clear();
                     }
+                    addedRulesLookup?.Clear();
 
                     // 释放COM对象（只在显式Dispose时释放，避免在析构函数中访问托管资源）
                     if (_firewallPolicy != null)
@@ -257,6 +304,7 @@ namespace FirewallManager
                 {
                     addedRules.Clear();
                     addedRules.AddRange(currentRules);
+                    addedRulesLookup = new HashSet<string>(currentRules, StringComparer.Ordinal);
                 }
 
                 LogManager.Info(LangManager.GetText("logMessages.syncRulesListCompleted", currentRules.Count));
@@ -269,7 +317,7 @@ namespace FirewallManager
 
         /// <summary>
         /// 检查防火墙规则是否存在
-        /// 检查指定名称的规则是否存在于已添加的规则列表中
+        /// 使用 HashSet 实现 O(1) 查找，避免大规则集下的性能退化
         /// </summary>
         /// <param name="ruleName">规则名称</param>
         /// <returns>是否存在</returns>
@@ -279,7 +327,7 @@ namespace FirewallManager
             {
                 lock (addedRulesLock)
                 {
-                    return addedRules.Contains(ruleName);
+                    return addedRulesLookup != null && addedRulesLookup.Contains(ruleName);
                 }
             }
             catch (Exception ex)
@@ -287,62 +335,6 @@ namespace FirewallManager
                 LogManager.Error(LangManager.GetText("logMessages.checkRuleExistsFailed", ruleName), ex);
                 return false;
             }
-        }
-
-        /// <summary>
-        /// 生成文件路径的哈希值，确保规则名称唯一性
-        /// 使用SHA256算法生成路径的哈希值，取前8个字节作为规则名称的一部分
-        /// </summary>
-        /// <param name="path">文件路径</param>
-        /// <returns>路径的哈希值</returns>
-        public string GetPathHash(string path)
-        {
-            using (var sha256 = System.Security.Cryptography.SHA256.Create())
-            {
-                byte[] hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
-                StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < 16; i++) // 取前16个字节（32个十六进制字符），降低哈希碰撞概率
-                {
-                    sb.Append(hashBytes[i].ToString("x2"));
-                }
-                return sb.ToString();
-            }
-        }
-
-        /// <summary>
-        /// 清理规则名称中的不安全字符
-        /// </summary>
-        public string SanitizeRuleName(string input)
-        {
-            if (string.IsNullOrEmpty(input))
-            {
-                return input;
-            }
-
-            // 过滤控制字符（0x00-0x1F, 0x7F），防止规则名称注入
-            char[] buffer = new char[input.Length];
-            int pos = 0;
-            foreach (char c in input)
-            {
-                if (c >= 32 && c != 127 && c != '"' && c != '\'' && c != '\\' && c != '/' && c != ':' && c != '*' && c != '?' && c != '<' && c != '>' && c != '|')
-                {
-                    buffer[pos++] = c;
-                }
-                else if (pos > 0 && buffer[pos - 1] != '_')
-                {
-                    buffer[pos++] = '_';
-                }
-            }
-            string sanitized = new string(buffer, 0, pos);
-
-            // 限制规则名称长度（防火墙规则名称通常限制在 64-128 字符）
-            const int maxRuleNameLength = 60;
-            if (sanitized.Length > maxRuleNameLength)
-            {
-                sanitized = sanitized.Substring(0, maxRuleNameLength);
-            }
-
-            return sanitized;
         }
 
         /// <summary>
@@ -389,45 +381,12 @@ namespace FirewallManager
                 // 检查规则是否已存在
                 if (!CheckRuleExists(ruleName))
                 {
-                    // 创建新规则（使用CLSID防止ProgID劫持）
-                    dynamic newRule = ComHelper.CreateComObjectWithClsid(
-                        Config.FIREWALL_RULE_CLSID,
-                        Config.FIREWALL_RULE_IID,
-                        Config.FIREWALL_RULE_PROGID);
-                    if (newRule == null)
+                    if (CreateAndAddFirewallRule(ruleName, exePath, LangManager.GetText("firewall.ruleDescriptionAuto")))
                     {
-                        LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
-                        return false;
-                    }
-
-                    try
-                    {
-                        SafeSetProperty(newRule, "Name", ruleName);
-                        SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescriptionAuto") + ": " + exePath);
-                        SafeSetProperty(newRule, "ApplicationName", exePath);
-                        SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
-                        SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
-                        SafeSetProperty(newRule, "Enabled", true);
-                        SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
-
-                        firewallPolicy.Rules.Add(newRule);
-
-                        // 添加到本地列表
-                        lock (addedRulesLock)
-                        {
-                            if (!addedRules.Contains(ruleName))
-                            {
-                                addedRules.Add(ruleName);
-                            }
-                        }
-
                         LogManager.Info(LangManager.GetText("logMessages.autoCreateFirewallRule", ruleName, exePath));
                         return true;
                     }
-                    finally
-                    {
-                        ReleaseComObject(newRule);
-                    }
+                    return false;
                 }
                 return false;
             }
@@ -507,7 +466,7 @@ namespace FirewallManager
                     foreach (var ruleName in allRuleNames)
                     {
                         // 验证规则名确实是由本程序创建的（格式校验）
-                        if (IsRuleCreatedByUs(ruleName) && !rulesToDelete.Contains(ruleName))
+                        if (RuleNamingService.IsRuleCreatedByUs(ruleName) && !rulesToDelete.Contains(ruleName))
                         {
                             try
                             {
@@ -532,6 +491,7 @@ namespace FirewallManager
                 lock (addedRulesLock)
                 {
                     addedRules.Clear();
+                    addedRulesLookup.Clear();
                 }
 
                 LogManager.Info(LangManager.GetText("logMessages.clearRulesSuccess", deletedCount));
@@ -545,17 +505,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证规则是否由本程序创建
-        /// 规则名格式: Block_{sanitizedFileName}_{pathHash}
-        /// 其中 pathHash 是一个32字符的base64url编码哈希值
+        /// 验证规则名称是否有效
+        /// 规则名称不能为空且长度不超过 256 字符，防止注入攻击
         /// </summary>
         /// <param name="ruleName">规则名称</param>
-        /// <returns>是否由本程序创建</returns>
-        private bool IsRuleCreatedByUs(string ruleName)
-        {
-            // 转发到 RuleNamingService 统一实现
-            return RuleNamingService.IsRuleCreatedByUs(ruleName);
-        }
+        /// <returns>是否有效</returns>
+        private static bool IsValidRuleName(string ruleName)
+            => !string.IsNullOrEmpty(ruleName) && ruleName.Length <= 256;
 
         /// <summary>
         /// 删除防火墙规则
@@ -567,7 +523,7 @@ namespace FirewallManager
             try
             {
                 // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
-                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                if (!IsValidRuleName(ruleName))
                 {
                     return false;
                 }
@@ -577,6 +533,7 @@ namespace FirewallManager
                 lock (addedRulesLock)
                 {
                     addedRules.Remove(ruleName);
+                    addedRulesLookup.Remove(ruleName);
                 }
                 
                 LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
@@ -616,9 +573,6 @@ namespace FirewallManager
 
             try
             {
-                // 诊断日志
-                LogManager.Info($"[诊断] UpdateFirewallRules 被调用 - targets.Count={monitoredTargets?.Count ?? 0}, firewallPolicy==null={firewallPolicy == null}");
-                
                 LogManager.Info(LangManager.GetText("logMessages.updatingRules"));
                 updateUI("Running", LangManager.GetText("status.scanningTargets"));
 
@@ -667,15 +621,9 @@ namespace FirewallManager
 
                 // 等待所有扫描任务完成
                 await Task.WhenAll(scanTasks);
-                
-                // 合并结果
-                foreach (var task in scanTasks)
-                {
-                    exeFiles.AddRange(task.Result);
-                }
 
-                // 去重，避免重复处理
-                exeFiles = exeFiles.Distinct().ToList();
+                // 合并结果并去重，避免重复处理
+                exeFiles = scanTasks.SelectMany(t => t.Result).Distinct().ToList();
 
                 LogManager.Info(LangManager.GetText("logMessages.foundExeFiles", exeFiles.Count));
                 updateUI("Running", LangManager.GetText("status.creatingRules", exeFiles.Count));
@@ -719,6 +667,7 @@ namespace FirewallManager
                                     lock (addedRulesLock)
                                     {
                                         addedRules.Remove(ruleName);
+                                        addedRulesLookup.Remove(ruleName);
                                     }
                                     LogManager.Info(LangManager.GetText("logMessages.deleteWhitelistAppRule", ruleName));
                                 }
@@ -743,42 +692,14 @@ namespace FirewallManager
                         // 检查规则是否已存在
                         if (!CheckRuleExists(ruleName))
                         {
-                            // 创建新规则（使用CLSID防止ProgID劫持）
-                            dynamic newRule = ComHelper.CreateComObjectWithClsid(
-                                Config.FIREWALL_RULE_CLSID,
-                                Config.FIREWALL_RULE_IID,
-                                Config.FIREWALL_RULE_PROGID);
-                            if (newRule == null)
+                            if (CreateAndAddFirewallRule(ruleName, exeFile, LangManager.GetText("firewall.ruleDescription")))
                             {
-                                LogManager.Error(LangManager.GetText("logMessages.createFirewallRuleInstanceFailed"));
-                                skippedCount++;
-                                continue;
-                            }
-
-                            try
-                            {
-                                SafeSetProperty(newRule, "Name", ruleName);
-                                SafeSetProperty(newRule, "Description", LangManager.GetText("firewall.ruleDescription") + ": " + exeFile);
-                                SafeSetProperty(newRule, "ApplicationName", exeFile);
-                                SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
-                                SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
-                                SafeSetProperty(newRule, "Enabled", true);
-                                SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
-
-                                firewallPolicy.Rules.Add(newRule);
-
-                                // 添加到本地列表
-                                lock (addedRulesLock)
-                                {
-                                    addedRules.Add(ruleName);
-                                }
-
                                 addedCount++;
                                 LogManager.Info(LangManager.GetText("logMessages.createFirewallRule", ruleName, exeFile));
                             }
-                            finally
+                            else
                             {
-                                ReleaseComObject(newRule);
+                                skippedCount++;
                             }
                         }
                         else
@@ -858,6 +779,7 @@ namespace FirewallManager
                                 lock (addedRulesLock)
                                 {
                                     addedRules.Remove(ruleName);
+                                    addedRulesLookup.Remove(ruleName);
                                 }
                                 deletedCount++;
                                 LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
@@ -895,7 +817,7 @@ namespace FirewallManager
             try
             {
                 // 验证规则名称，防止注入攻击
-                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                if (!IsValidRuleName(ruleName))
                 {
                     return null;
                 }
@@ -938,7 +860,7 @@ namespace FirewallManager
             try
             {
                 // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
-                if (string.IsNullOrEmpty(ruleName) || ruleName.Length > 256)
+                if (!IsValidRuleName(ruleName))
                 {
                     return false;
                 }

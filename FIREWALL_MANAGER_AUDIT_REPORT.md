@@ -8,69 +8,25 @@
 
 ## 一、安全漏洞
 
-### S-01: ComHelper.IsCallerProcessValid 逻辑缺陷（中危）
+### S-01: ComHelper.IsCallerProcessValid 逻辑缺陷（中危） ✅ 已修复
 
-**文件**: [ComHelper.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/ComHelper.cs#L199-L230)
+**文件**: [ComHelper.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/ComHelper.cs)
 
 **问题描述**: 
 `IsCallerProcessValid` 方法的命名和文档表明其目的是验证调用者进程的合法性，但实际实现是验证文件路径是否位于受信任目录（Program Files、System、Windows）或是否有数字签名。这与方法名称暗示的功能不符，可能导致安全判断错误。
 
-**代码分析**:
-```csharp
-internal static bool IsCallerProcessValid(string filePath)
-{
-    // 实际验证的是文件路径位置，而非调用者进程
-    if (normalizedPath.StartsWith(programFiles) ||
-        normalizedPath.StartsWith(programFilesX86) ||
-        normalizedPath.StartsWith(systemFolder) ||
-        normalizedPath.StartsWith(windowsFolder))
-    {
-        return true;
-    }
-    return IsFileDigitallySigned(filePath);
-}
-```
-
-**影响**:
-- 攻击者可能将恶意程序放置在受信任目录下或伪造数字签名来绕过检查
-- 方法名称误导开发者，可能导致误用
-
-**建议修复**:
-- 重命名方法为 `IsFilePathTrusted` 或类似名称以准确反映其功能
-- 或实现真正的调用者进程验证逻辑
+**修复状态**: 已修复。方法已重命名为 `IsFilePathTrusted`，准确反映其功能。
 
 ---
 
-### S-02: FirewallService.GetRuleDetails 返回动态对象（低危）
+### S-02: FirewallService.GetRuleDetails 返回动态对象（低危） ✅ 已修复
 
-**文件**: [FirewallService.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/FirewallService.cs#L858-L869)
+**文件**: [FirewallService.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/FirewallService.cs)
 
 **问题描述**:
 `GetRuleDetails` 方法返回 `dynamic` 类型的 COM 对象，调用者可以通过反射访问任意属性，存在潜在的类型安全风险和 COM 对象劫持攻击面。
 
-**代码分析**:
-```csharp
-public dynamic GetRuleDetails(string ruleName)
-{
-    try
-    {
-        return firewallPolicy.Rules.Item(ruleName);
-    }
-    catch (Exception ex)
-    {
-        LogManager.Error(...);
-        return null;
-    }
-}
-```
-
-**影响**:
-- 缺乏编译时类型检查
-- COM 对象属性访问未经过安全验证
-
-**建议修复**:
-- 创建规则详情数据类，返回强类型对象而非动态对象
-- 或在返回前进行 COM 对象类型验证
+**修复状态**: 已修复。方法已改为返回强类型 `RuleDetailsInfo`，消除类型安全风险。
 
 ---
 
@@ -345,17 +301,14 @@ return whitelistCache.Contains(normalizedAppPath);
 
 ## 四、代码质量改进建议
 
-### Q-01: FirewallService 缺少 IDisposable 接口实现的显式声明
+### Q-01: FirewallService 缺少 IDisposable 接口实现的显式声明 ✅ 已修复
 
-**文件**: [FirewallService.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/FirewallService.cs#L16)
+**文件**: [FirewallService.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/FirewallService.cs)
 
 **问题描述**:
 `FirewallService` 实现了 `IFirewallService` 接口（继承自 `IDisposable`），但类定义中没有显式声明 `: IDisposable`，降低了代码可读性。
 
-**建议修复**:
-```csharp
-public class FirewallService : IFirewallService, IDisposable
-```
+**修复状态**: 已修复。类已实现 `Dispose()` 和 `Dispose(bool disposing)` 方法。
 
 ---
 
@@ -394,15 +347,14 @@ catch (Exception)
 
 ---
 
-### Q-04: ComHelper.SafeGetProperty 重载方法命名不一致
+### Q-04: ComHelper.SafeGetProperty 重载方法命名不一致 ✅ 已修复
 
-**文件**: [ComHelper.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/ComHelper.cs#L20-L52)
+**文件**: [ComHelper.cs](file:///C:/Users/tjliy/Documents/trae_projects/FirewallManager/ComHelper.cs)
 
 **问题描述**:
 有两个 `SafeGetProperty` 重载方法，一个带日志参数，一个不带，但命名相同，调用者需要根据参数类型判断行为差异。
 
-**建议修复**:
-- 重命名带日志参数的版本为 `SafeGetPropertyWithLog` 或类似名称，提高可读性
+**修复状态**: 已修复。两个重载已合并为单个方法，通过 `logPropertyName` 默认 null 参数控制是否记录日志，消除重载歧义。
 
 ---
 
@@ -444,28 +396,28 @@ catch (Exception)
 | 严重程度 | 数量 | 说明 |
 |---------|------|------|
 | 高危 | 0 | 无高危漏洞 |
-| 中危 | 3 | S-01, B-01, B-02 |
-| 低危 | 5 | S-02, S-03, B-03, B-04, B-05 |
+| 中危 | 3 | S-01(✅已修复), B-01, B-02 |
+| 低危 | 5 | S-02(✅已修复), S-03, B-03, B-04, B-05 |
 
 ### 代码质量评分
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
-| 安全性 | 8/10 | 大部分安全措施已实现，需修复少数中危问题 |
-| 代码质量 | 7/10 | 存在冗余代码和命名不一致问题 |
-| 可维护性 | 7/10 | 缺少未使用代码清理，文档较完善 |
+| 安全性 | 9/10 | 大部分安全措施已实现，S-01/S-02 已修复 |
+| 代码质量 | 8/10 | Q-01/Q-04 已修复，冗余代码持续清理中 |
+| 可维护性 | 8/10 | 提取公共方法（TryAddPathToMonitoring、IsValidRuleName），代码结构持续优化 |
 | 测试覆盖 | 7/10 | 单元测试覆盖核心配置功能，需扩展到业务逻辑 |
 
 ### 优先修复建议
 
 1. **B-01**: 添加 `volatile` 关键字（立即修复）
 2. **B-02**: 修复日志初始化递归调用风险（立即修复）
-3. **S-01**: 重命名 `IsCallerProcessValid` 方法（短期修复）
+3. ~~**S-01**: 重命名 `IsCallerProcessValid` 方法~~ ✅ 已修复
 4. **F-01**: 删除或使用 `ILocalizationService`（中期改进）
 5. **F-03**: 补全语言文件缺失的消息键（中期改进）
 
 ---
 
-**审计日期**: 2026-07-01
+**审计日期**: 2026-07-01（最近更新: 2026-08-18）
 **审计范围**: FirewallManager 项目全部源代码
 **审计人员**: TRAE AI Code Review

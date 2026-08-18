@@ -88,12 +88,9 @@ namespace FirewallManager
             using (var sha256 = SHA256.Create())
             {
                 byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(path));
-                StringBuilder sb = new StringBuilder(32);
-                for (int i = 0; i < 16; i++) // 取前16个字节（32个十六进制字符）
-                {
-                    sb.Append(hashBytes[i].ToString("x2"));
-                }
-                return sb.ToString();
+                // 取前 16 字节并转换为小写十六进制字符串（32 字符）
+                // 使用 Convert.ToHexString 替代手动 StringBuilder 拼接，性能更优
+                return Convert.ToHexString(hashBytes, 0, 16).ToLowerInvariant();
             }
         }
 

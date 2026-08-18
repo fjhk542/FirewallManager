@@ -125,22 +125,16 @@ namespace FirewallManager
                     {
                         warningMessage += LangManager.GetText("messages.ruleDirectionInboundWarning") + Environment.NewLine;
                     }
-                    if (directionChanged || actionChanged)
-                    {
-                        warningMessage += LangManager.GetText("messages.ruleChangeConfirm");
-                    }
+                    warningMessage += LangManager.GetText("messages.ruleChangeConfirm");
 
-                    if (!string.IsNullOrEmpty(warningMessage))
+                    var result = MessageBox.Show(
+                        warningMessage,
+                        LangManager.GetText("messages.securityWarningTitle"),
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (result != DialogResult.Yes)
                     {
-                        var result = MessageBox.Show(
-                            warningMessage,
-                            LangManager.GetText("messages.securityWarningTitle"),
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Warning);
-                        if (result != DialogResult.Yes)
-                        {
-                            return;
-                        }
+                        return;
                     }
                 }
 

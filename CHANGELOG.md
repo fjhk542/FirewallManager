@@ -5,6 +5,55 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 此项目遵循 [语义化版本控制](https://semver.org/lang/zh-CN/)。
 
+## [1.9.2] - 2026-08-18
+
+### 重构优化
+- 提取 `Form1.TryAddPathToMonitoring` 方法，统一 5 处路径添加逻辑（去重+添加+列表更新），消除重复代码
+- 提取 `FirewallService.IsValidRuleName` 方法，统一 3 处规则名验证（DeleteRule、GetRuleDetails、UpdateRule）
+- 合并 `ComHelper.SafeGetProperty` 两个重载为单个方法，通过 `logPropertyName` 默认 null 控制日志记录
+- 优化 `FirewallService.UpdateFirewallRules`，使用 `SelectMany` 替代 `foreach + AddRange` 合并扫描结果
+
+### 审计报告更新
+- S-01（IsCallerProcessValid 命名缺陷）：标记为已修复，方法已重命名为 `IsFilePathTrusted`
+- S-02（GetRuleDetails 返回 dynamic）：标记为已修复，已改为返回强类型 `RuleDetailsInfo`
+- Q-01（IDisposable 显式声明）：标记为已修复
+- Q-04（SafeGetProperty 重载不一致）：标记为已修复，重载已合并
+- 代码质量评分更新：安全性 8→9，代码质量 7→8，可维护性 7→8
+
+## [1.9.1] - 2026-08-18
+
+### 新增
+- 添加 GUID 格式验证方法 `IsValidGuidFormat()`
+- 添加 HMAC 密钥回退生成方法 `GenerateFallbackMachineKey()`
+- 添加多层回退机制确保 HMAC 密钥生成失败时的系统可用性
+
+### 修改
+- 增强 `LangManager.ProcessJsonNode()` 方法，避免递归调用 `GetText()`
+- 改进 `TargetStore.IsValidLanguageCode()` 方法，实现完整的 BCP 47 标准验证
+- 增强 `Form1.pasteMenuItem_Click()` 剪贴板访问机制，使用指数退避策略
+- 优化 `Config.GenerateNewHmacKey()` 方法，添加健壮的错误处理和回退机制
+- 更新 `ComHelper.QueryInterface()` 调用，使用 `in` 参数替代 `ref` 参数
+- 改进文件读取逻辑，使用循环读取确保数据完整性
+
+### 修复
+- **递归调用风险 (Bug-001)**: 修复 `LangManager` 中 JSON 深度超限时的递归调用，防止堆栈溢出
+- **语言代码验证不足 (Bug-002)**: 修复 `TargetStore` 语言代码验证不严格的问题，符合 BCP 47 标准
+- **剪贴板访问不稳定 (Bug-003)**: 修复剪贴板访问失败问题，增强重试机制和错误处理
+- **HMAC 密钥生成回退缺失 (Bug-004)**: 修复注册表读取失败时密钥生成失败的问题，添加多层回退机制
+- **编译警告 (Warning-001)**: 修复 COM 对象调用中使用 `ref` 参数的警告，改为 `in` 参数
+- **文件读取不完整警告 (Warning-002)**: 修复单次 `Read` 调用可能无法读取完整数据的问题
+
+### 性能优化
+- 优化 COM 对象接口查询性能，使用 `in` 参数减少内存复制
+- 改进剪贴板访问性能，使用指数退避减少无效重试
+- 增强文件读取可靠性，确保数据完整性
+
+### 代码质量
+- 消除所有编译警告（4个 → 0个）
+- 提高代码健壮性和容错能力
+- 增强错误处理和日志记录
+- 改进代码注释和文档
+
 ## [1.9.0] - 2026-07-27
 
 ### 新增

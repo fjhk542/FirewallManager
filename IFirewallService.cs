@@ -79,19 +79,5 @@ namespace FirewallManager
         /// <param name="folderPath">文件夹路径</param>
         /// <returns>删除的规则数量</returns>
         int RemoveFolderRules(string folderPath);
-
-        /// <summary>
-        /// 生成文件路径的哈希值
-        /// </summary>
-        /// <param name="path">文件路径</param>
-        /// <returns>路径的哈希值</returns>
-        string GetPathHash(string path);
-
-        /// <summary>
-        /// 清理规则名称中的不安全字符
-        /// </summary>
-        /// <param name="input">输入字符串</param>
-        /// <returns>清理后的规则名称</returns>
-        string SanitizeRuleName(string input);
     }
 }
