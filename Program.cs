@@ -6,12 +6,12 @@ namespace FirewallManager
     static class Program
     {
         /// <summary>
-        /// 应用程序的主入口点
+        /// Application main entry point
         /// </summary>
         [STAThread]
         static void Main()
         {
-            // 注册全局未处理异常处理
+            // Register global unhandled exception handlers
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             Application.ThreadException += Application_ThreadException;
             Application.ApplicationExit += Application_ApplicationExit;
@@ -23,7 +23,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 应用程序域未处理异常处理
+        /// AppDomain unhandled exception handler
         /// </summary>
         private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
@@ -41,12 +41,12 @@ namespace FirewallManager
             }
             catch
             {
-                // 避免递归异常
+                // Avoid recursive exceptions
             }
         }
 
         /// <summary>
-        /// 应用程序线程未处理异常处理
+        /// Application thread unhandled exception handler
         /// </summary>
         private static void Application_ThreadException(object sender, System.Threading.ThreadExceptionEventArgs e)
         {
@@ -54,7 +54,7 @@ namespace FirewallManager
             {
                 LogManager.Error("Unhandled thread exception", e.Exception);
                 
-                // 对于严重异常，提示用户并终止
+                // For critical exceptions, prompt user and terminate
                 DialogResult result = MessageBox.Show(
                     "程序发生严重错误，是否继续运行？\n\n" + e.Exception.Message,
                     "严重错误",
@@ -73,22 +73,22 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 应用程序退出事件处理程序
-        /// 用于在应用程序退出时释放静态资源
+        /// Application exit event handler
+        /// Used to release static resources when application exits
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private static void Application_ApplicationExit(object sender, EventArgs e)
         {
             try
             {
-                // 释放白名单监控器等静态资源
+                // Release whitelist watcher and other static resources
                 WhitelistForm.ReleaseStaticResources();
                 
-                // 释放日志文件句柄
+                // Release log file handle
                 LogManager.Dispose();
                 
-                // 尝试记录退出日志（此时可能已无法写入）
+                // Try to log exit (may not be writable at this point)
                 try
                 {
                     Console.WriteLine("FirewallManager application exited.");
@@ -97,7 +97,7 @@ namespace FirewallManager
             }
             catch
             {
-                // 退出时的异常不应影响程序终止
+                // Exceptions during exit should not affect program termination
             }
         }
     }

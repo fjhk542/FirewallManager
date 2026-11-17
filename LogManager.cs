@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -8,85 +9,85 @@ using System.Threading.Tasks;
 namespace FirewallManager
 {
     /// <summary>
-    /// 日志管理器类
-    /// 用于记录和读取操作日志
-    /// 修复：使用文件句柄防止符号链接跟随，设置受限ACL，原子操作清理日志
+    /// Log manager class
+    /// Used for recording and reading operation logs
+    /// Fix: use file handle to prevent symbolic link following, set restricted ACL, atomic log cleanup
     /// </summary>
     public static class LogManager
     {
         /// <summary>
-        /// 日志文件路径
+        /// Log file path
         /// </summary>
         private static readonly string _logFilePath;
 
         /// <summary>
-        /// 日志文件句柄（排他创建，防止符号链接攻击）
+        /// Log file handle (exclusive create to prevent symbolic link attacks)
         /// </summary>
         private static FileStream _logFileStream;
 
         /// <summary>
-        /// 获取日志文件路径
+        /// Gets the log file path
         /// </summary>
-        /// <returns>日志文件的完整路径</returns>
+        /// <returns>Full path of the log file</returns>
         public static string LogFilePath
         {
             get { return _logFilePath; }
         }
 
         /// <summary>
-        /// 日志文件大小限制（10MB）
+        /// Log file size limit (10MB)
         /// </summary>
         private const long _logFileSizeLimit = 10 * 1024 * 1024;
 
         /// <summary>
-        /// 最大日志行数
+        /// Maximum number of log lines
         /// </summary>
         private const int _maxLogLines = 1000;
 
         /// <summary>
-        /// 日志清理时保留的行数
-        /// 当日志文件超过大小限制时，保留最新的5000行
+        /// Number of lines to keep during log cleanup
+        /// When log file exceeds size limit, keep the latest 5000 lines
         /// </summary>
         private const int _linesToKeepOnClean = 5000;
 
         /// <summary>
-        /// 日志写入计数器，用于控制清理频率
+        /// Log write counter, used to control cleanup frequency
         /// </summary>
         private static int _logWriteCounter = 0;
 
         /// <summary>
-        /// 清理检查间隔（每100次日志写入检查一次）
+        /// Cleanup check interval (check every 100 log writes)
         /// </summary>
         private const int _cleanCheckInterval = 100;
         
         /// <summary>
-        /// 日志频率限制计数器
+        /// Log frequency limit counter
         /// </summary>
         private static int _logFrequencyCounter = 0;
         
         /// <summary>
-        /// 日志频率限制时间窗口（毫秒）
+        /// Log frequency limit time window (milliseconds)
         /// </summary>
         private const int _logFrequencyTimeWindow = 1000;
         
         /// <summary>
-        /// 时间窗口内的最大日志数量
+        /// Maximum number of logs within the time window
         /// </summary>
         private const int _logFrequencyLimit = 100;
         
         /// <summary>
-        /// 上次日志频率检查时间戳
+        /// Last log frequency check timestamp
         /// </summary>
         private static long _lastLogFrequencyCheck = 0;
 
         /// <summary>
-        /// 用于确保线程安全的锁对象
+        /// Lock object to ensure thread safety
         /// </summary>
         private static readonly object _logLock = new object();
 
         /// <summary>
-        /// 预编译的正则表达式：控制字符（保留 \t \n \r），防止日志注入攻击
-        /// 使用静态编译避免每次调用时重新编译正则，提升性能
+        /// Pre-compiled regex: control characters (preserves \t \n \r), prevents log injection attacks
+        /// Use static compilation to avoid re-compiling regex on each call, improving performance
         /// </summary>
         private static readonly System.Text.RegularExpressions.Regex _controlCharsRegex =
             new System.Text.RegularExpressions.Regex(
@@ -94,7 +95,7 @@ namespace FirewallManager
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>
-        /// 预编译的正则表达式：Unicode 控制字符（如双向文本覆盖字符），防止日志伪造
+        /// Pre-compiled regex: Unicode control characters (e.g., bidirectional text override characters), prevents log forgery
         /// </summary>
         private static readonly System.Text.RegularExpressions.Regex _unicodeControlCharsRegex =
             new System.Text.RegularExpressions.Regex(
@@ -102,7 +103,7 @@ namespace FirewallManager
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>
-        /// 预编译的正则表达式：敏感信息（password/token/secret/apikey/auth）
+        /// Pre-compiled regex: sensitive information (password/token/secret/apikey/auth)
         /// </summary>
         private static readonly System.Text.RegularExpressions.Regex _sensitiveInfoRegex =
             new System.Text.RegularExpressions.Regex(
@@ -110,64 +111,64 @@ namespace FirewallManager
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         /// <summary>
-        /// 日志更新事件
-        /// 当日志文件有新内容写入时触发，用于通知UI更新日志显示
+        /// Log update event
+        /// Triggered when new content is written to the log file, used to notify UI to update log display
         /// </summary>
         public static event Action<string> OnLogUpdated;
 
         /// <summary>
-        /// 静态构造函数
-        /// 初始化日志文件路径，使用排他句柄防止符号链接攻击
+        /// Static constructor
+        /// Initializes log file path, uses exclusive handle to prevent symbolic link attacks
         /// </summary>
         static LogManager()
         {
             try
             {
-                // 获取应用程序数据目录
+                // Get application data directory
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
-                // 确保路径有效且安全
+                // Ensure path is valid and safe
                 if (string.IsNullOrEmpty(appDataPath))
                 {
                     throw new InvalidOperationException("Cannot get app data directory");
                 }
 
-                // 构建应用程序文件夹路径
+                // Build application folder path
                 string appFolderPath = Path.Combine(appDataPath, Config.APP_DATA_DIR);
 
-                // 规范化路径，防止路径遍历攻击
+                // Normalize path to prevent path traversal attacks
                 appFolderPath = Path.GetFullPath(appFolderPath);
 
-                // 确保目录存在
+                // Ensure directory exists
                 Directory.CreateDirectory(appFolderPath);
 
-                // 构建日志文件路径
+                // Build log file path
                 string logFileName = Config.LOG_FILE_NAME;
 
-                // 验证文件名安全性
+                // Validate file name safety
                 if (logFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
                 {
                     throw new InvalidOperationException("Log file name contains invalid characters");
                 }
 
-                // 设置日志文件路径
+                // Set log file path
                 _logFilePath = Path.Combine(appFolderPath, logFileName);
 
-                // 再次规范化最终路径
+                // Normalize final path again
                 _logFilePath = Path.GetFullPath(_logFilePath);
 
-                // 确保路径仍然在应用程序目录内
+                // Ensure path is still within application directory
                 string expectedPrefix = appFolderPath + Path.DirectorySeparatorChar;
                 if (!_logFilePath.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException("Log file path outside safe range");
                 }
 
-                // 使用排他句柄打开/创建日志文件，防止符号链接攻击
-                // FileShare.ReadWrite 允许其他读取器（如 File.ReadLines）同时访问
+                // Open/create log file with exclusive handle to prevent symbolic link attacks
+                // FileShare.ReadWrite allows other readers (like File.ReadLines) to access concurrently
                 _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
 
-                // 验证文件不是reparse point
+                // Verify file is not a reparse point
                 FileInfo logFileInfo = new FileInfo(_logFilePath);
                 if ((logFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
                 {
@@ -176,12 +177,12 @@ namespace FirewallManager
                     throw new InvalidOperationException("Log file path contains symbolic link");
                 }
 
-                // 设置日志文件受限ACL
+                // Set restricted ACL on log file
                 SetLogFileSecurePermissions();
             }
             catch (Exception ex)
             {
-                // 使用安全的回退路径，并对其进行相同的验证
+                // Use safe fallback path with the same validation
                 try
                 {
                     string tempPath = Path.GetTempPath();
@@ -197,19 +198,19 @@ namespace FirewallManager
                     _logFilePath = Path.Combine(tempPath, Config.LOG_FILE_NAME);
                     _logFilePath = Path.GetFullPath(_logFilePath);
 
-                    // 使用排他句柄打开日志文件
+                    // Open log file with exclusive handle
                     _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
 
-                    // 设置日志文件受限ACL
+                    // Set restricted ACL on log file
                     SetLogFileSecurePermissions();
                 }
                 catch
                 {
-                    // 极端情况：使用当前目录
+                    // Extreme case: use current directory
                     _logFilePath = Path.GetFullPath(Config.LOG_FILE_NAME);
                     _logFileStream = new FileStream(_logFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
                 }
-                // 静态构造函数阶段避免调用 LogManager 自身（防止递归）
+                // Avoid calling LogManager itself during static constructor phase (prevent recursion)
                 try
                 {
                     Console.Error.WriteLine($"LogManager initialization failed: {ex.Message}");
@@ -219,8 +220,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 设置日志文件受限ACL权限
-        /// 实际实现委托到 ComHelper.SetSecureFilePermissionsInternal，消除重复代码
+        /// Sets restricted ACL permissions on log file
+        /// Actual implementation delegates to ComHelper.SetSecureFilePermissionsInternal to eliminate duplicate code
         /// </summary>
         private static void SetLogFileSecurePermissions()
         {
@@ -228,7 +229,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 释放日志文件句柄
+        /// Releases log file handle
         /// </summary>
         internal static void Dispose()
         {
@@ -244,54 +245,54 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 日志级别枚举
-        /// 定义不同的日志严重级别
+        /// Log level enum
+        /// Defines different log severity levels
         /// </summary>
         public enum LogLevel
         {
             /// <summary>
-            /// 调试信息
+            /// Debug information
             /// </summary>
             Debug,
             /// <summary>
-            /// 普通信息
+            /// General information
             /// </summary>
             Info,
             /// <summary>
-            /// 警告信息
+            /// Warning information
             /// </summary>
             Warning,
             /// <summary>
-            /// 错误信息
+            /// Error information
             /// </summary>
             Error
         }
 
         /// <summary>
-        /// 记录日志到文件并触发更新事件
-        /// 修复：使用持有文件句柄写入，防止符号链接跟随攻击
+        /// Records log to file and triggers update event
+        /// Fix: writes using held file handle to prevent symbolic link following attacks
         /// </summary>
-        /// <param name="level">日志级别（Debug/Info/Warning/Error）</param>
-        /// <param name="message">日志消息内容</param>
-        /// <param name="exception">关联的异常对象，可选</param>
+        /// <param name="level">Log level (Debug/Info/Warning/Error)</param>
+        /// <param name="message">Log message content</param>
+        /// <param name="exception">Associated exception object, optional</param>
         public static void Log(LogLevel level, string message, Exception exception = null)
         {
             try
             {
-                // 检查日志频率限制
+                // Check log frequency limit
                 if (!CheckLogFrequencyLimit())
                 {
                     return;
                 }
                 
-                // 过滤敏感信息
+                // Filter sensitive information
                 string filteredMessage = FilterSensitiveInfo(message);
                 
-                // 构建日志消息
+                // Build log message
                 string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
                 string logMessage = $"[{timestamp}] [{level}] {filteredMessage}";
                 
-                // 如果有异常，添加异常信息
+                // If there is an exception, add exception information
                 if (exception != null)
                 {
                     string filteredExceptionMessage = FilterSensitiveInfo(exception.Message);
@@ -304,10 +305,10 @@ namespace FirewallManager
                     logMessage = logMessage.Substring(0, 10000) + "... [Message truncated]";
                 }
                 
-                // 加锁确保线程安全
+                // Lock to ensure thread safety
                 lock (_logLock)
                 {
-                    // 使用持有文件句柄写入，防止符号链接跟随
+                    // Write using held file handle to prevent symbolic link following
                     if (_logFileStream != null)
                     {
                         byte[] logBytes = Encoding.UTF8.GetBytes(logMessage + Environment.NewLine);
@@ -317,14 +318,14 @@ namespace FirewallManager
                     }
                     else
                     {
-                        // 回退方案
+                        // Fallback
                         File.AppendAllText(_logFilePath, logMessage + Environment.NewLine, Encoding.UTF8);
                     }
                     
-                    // 增加写入计数器
+                    // Increment write counter
                     _logWriteCounter++;
                     
-                    // 定期检查并清理日志，避免频繁检查
+                    // Periodically check and clean logs to avoid frequent checks
                     if (_logWriteCounter >= _cleanCheckInterval)
                     {
                         _logWriteCounter = 0;
@@ -332,17 +333,17 @@ namespace FirewallManager
                     }
                 }
 
-                // 触发日志更新事件
+                // Trigger log update event
                 OnLogUpdated?.Invoke(logMessage);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.WriteLine($"Log error: {ex.Message}");
             }
         }
         
         /// <summary>
-        /// 检查日志频率限制
-        /// <returns>是否允许写入日志</returns>
+        /// Checks log frequency limit
         /// <returns>Whether to allow writing log</returns>
         private static bool CheckLogFrequencyLimit()
         {
@@ -350,30 +351,30 @@ namespace FirewallManager
             {
                 long currentTimestamp = DateTime.Now.Ticks / TimeSpan.TicksPerMillisecond;
                 
-                // 如果时间窗口已过，重置计数器
+                // Reset counter if time window has passed
                 if (currentTimestamp - _lastLogFrequencyCheck > _logFrequencyTimeWindow)
                 {
                     _logFrequencyCounter = 0;
                     _lastLogFrequencyCheck = currentTimestamp;
                 }
                 
-                // 检查是否超过频率限制
+                // Check if frequency limit is exceeded
                 if (_logFrequencyCounter >= _logFrequencyLimit)
                 {
                     return false;
                 }
                 
-                // 增加计数器
+                // Increment counter
                 _logFrequencyCounter++;
                 return true;
             }
         }
         
         /// <summary>
-        /// 过滤日志消息中的敏感信息和控制字符
+        /// Filters sensitive information and control characters in log messages
         /// </summary>
-        /// <param name="message">原始日志消息</param>
-        /// <returns>过滤后的日志消息</returns>
+        /// <param name="message">Original log message</param>
+        /// <returns>Filtered log message</returns>
         private static string FilterSensitiveInfo(string message)
         {
             if (string.IsNullOrEmpty(message))
@@ -383,12 +384,12 @@ namespace FirewallManager
             
             string filtered = message;
             
-            // 移除控制字符（除了常见的换行和制表符），防止日志注入攻击
-            // 保留 \t (0x09), \n (0x0A), \r (0x0D) 用于格式化
-            // 移除其他所有控制字符 (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F)
+            // Remove control characters (except common newlines and tabs) to prevent log injection attacks
+            // Preserve \t (0x09), \n (0x0A), \r (0x0D) for formatting
+            // Remove all other control characters (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F)
             filtered = _controlCharsRegex.Replace(filtered, string.Empty);
             
-            // 移除 Unicode 控制字符（如双向文本覆盖字符），防止日志伪造
+            // Remove Unicode control characters (e.g., bidirectional text override characters) to prevent log forgery
             filtered = _unicodeControlCharsRegex.Replace(filtered, string.Empty);
             
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -401,8 +402,8 @@ namespace FirewallManager
                 filtered,
                 "[" + LangManager.GetText("logMessages.logManager.sensitiveInfo") + "]");
             
-            // 用安全占位符替换换行符，防止伪造日志条目
-            // 但先保留异常堆栈的格式
+            // Replace newlines with safe placeholders to prevent forged log entries
+            // but first preserve exception stack trace format
             filtered = filtered.Replace("\r\n", " [CRLF] ");
             filtered = filtered.Replace("\r", " [CR] ");
             filtered = filtered.Replace("\n", " [LF] ");
@@ -411,7 +412,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 记录信息日志
+        /// Records info log
         /// </summary>
         public static void Info(string message)
         {
@@ -419,7 +420,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 记录警告日志
+        /// Records warning log
         /// </summary>
         public static void Warning(string message)
         {
@@ -427,31 +428,30 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 记录错误日志
+        /// Records error log
         /// </summary>
-        /// <param name="exception">异常对象</param>
+        /// <param name="exception">Exception object</param>
         public static void Error(string message, Exception exception = null)
         {
             Log(LogLevel.Error, message, exception);
         }
 
         /// <summary>
-        /// 读取日志文件内容
-        /// 返回最新的1000行日志记录
+        /// Reads log file content
+        /// Returns the latest 1000 log records
         /// </summary>
-        /// <returns>日志行列表，最多包含1000行最新日志</returns>
         /// <returns>Log line list, containing up to 1000 latest logs</returns>
         /// <remarks>
-        /// 该方法执行以下操作：
-        /// 1. 检查日志文件是否存在
-        /// 2. 使用File.ReadLines逐行读取，避免一次性加载大文件到内存
-        /// 3. 使用队列保持最新的1000行日志
-        /// 4. 当队列超过1000行时，移除最旧的行
+        /// This method performs the following operations:
+        /// 1. Checks if log file exists
+        /// 2. Uses File.ReadLines to read line by line, avoids loading entire large file into memory
+        /// 3. Uses queue to keep latest 1000 lines of logs
+        /// 4. Removes oldest line when queue exceeds 1000 lines
         /// 
-        /// 性能优化：
-        /// - 使用ReadLines而非ReadAllLines，内存占用减少约90%
-        /// - 使用队列而非数组+Reverse，避免多次反转操作
-        /// - 限制返回行数，避免UI卡顿
+        /// Performance optimizations:
+        /// - Uses ReadLines instead of ReadAllLines, memory usage reduced by approximately 90%
+        /// - Uses queue instead of array + Reverse, avoids multiple reversal operations
+        /// - Limits number of returned lines, avoids UI lag
         /// </remarks>
         public static List<string> ReadLogs()
         {
@@ -461,12 +461,12 @@ namespace FirewallManager
             {
                 if (File.Exists(_logFilePath))
                 {
-                    // 优化日志读取性能，避免多次Reverse()操作
+                    // Optimize log read performance, avoid multiple Reverse() operations
                     var logLines = new Queue<string>(_maxLogLines + 1);
                     
                     try
                     {
-                        // 优先使用 FileStream + StreamReader，确保文件共享模式兼容
+                        // Prefer FileStream + StreamReader, ensures file sharing mode compatibility
                         using (var stream = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         using (var reader = new StreamReader(stream, Encoding.UTF8))
                         {
@@ -483,7 +483,7 @@ namespace FirewallManager
                     }
                     catch (IOException)
                     {
-                        // 文件被占用时的回退：使用 File.ReadLines 自动处理
+                        // Fallback when file is locked: use File.ReadLines to handle automatically
                         System.Threading.Thread.Sleep(50);
                         var lines = File.ReadLines(_logFilePath, Encoding.UTF8);
                         foreach (var line in lines)
@@ -499,30 +499,32 @@ namespace FirewallManager
                     logs.AddRange(logLines);
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.WriteLine($"Log error: {ex.Message}");
             }
             
             return logs;
         }
 
         /// <summary>
-        /// 原子替换日志文件内容的核心逻辑
-        /// 抽取自 CheckAndCleanLogFile 与 ClearLogs，消除重复的临时文件创建/句柄切换/原子替换逻辑
-        /// 流程：创建排他临时文件 → 校验非 reparse point → 写入新内容 → 关闭当前句柄 → 原子替换 → 重开句柄 → 设置ACL
+        /// Core logic for atomically replacing log file content
+        /// Extracted from CheckAndCleanLogFile and ClearLogs to eliminate duplicate temp file creation/handle switching/atomic replacement logic
+        /// Flow: create exclusive temp file -> verify not reparse point -> write new content -> close current handle -> atomic replace -> reopen handle -> set ACL
         /// </summary>
-        /// <param name="writeContent">向临时文件写入新内容的回调；返回 false 表示拒绝写入（如 reparse point）</param>
-        /// <returns>是否替换成功</returns>
+        /// <param name="writeContent">Callback that writes new content to temp file; returns false to reject write (e.g., reparse point)</param>
+        /// <returns>Whether replacement succeeded</returns>
         private static bool AtomicReplaceLogContent(Func<FileStream, bool> writeContent)
         {
             string tempPath = Path.Combine(Path.GetDirectoryName(_logFilePath), Path.GetRandomFileName());
             bool rejectWrite = false;
             try
             {
-                // 排他创建临时文件
+                // Create exclusive temp file
                 using (var tempFs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 {
-                    // 验证不是 reparse point（拒绝写入时通过标志位通知外层清理，避免在 using 块内删除已打开的文件）
+                    // Verify not a reparse point (use flag to notify outer cleanup on rejection,
+                    // avoid deleting already opened file within using block)
                     FileInfo tempFileInfo = new FileInfo(tempPath);
                     if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
                     {
@@ -530,7 +532,7 @@ namespace FirewallManager
                         return false;
                     }
 
-                    // 写入新内容（由调用者决定写入什么）
+                    // Write new content (caller decides what to write)
                     if (!writeContent(tempFs))
                     {
                         rejectWrite = true;
@@ -538,21 +540,21 @@ namespace FirewallManager
                     }
                 }
 
-                // 关闭当前持有句柄
+                // Close currently held handle
                 if (_logFileStream != null)
                 {
                     _logFileStream.Dispose();
                     _logFileStream = null;
                 }
 
-                // 原子替换
+                // Atomic replace
                 File.Replace(tempPath, _logFilePath, null);
 
-                // 重新打开文件句柄（使用 ReadWrite 模式，确保日志读写兼容）
+                // Reopen file handle (use ReadWrite mode to ensure log read/write compatibility)
                 _logFileStream = new FileStream(_logFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
                 _logFileStream.Seek(0, SeekOrigin.End);
 
-                // 设置ACL
+                // Set ACL
                 SetLogFileSecurePermissions();
                 return true;
             }
@@ -566,7 +568,7 @@ namespace FirewallManager
                     }
                 }
                 catch { }
-                // 拒绝写入（如 reparse point）属于安全策略，不向上抛出
+                // Rejected write (e.g., reparse point) is a security policy, don't throw up
                 if (rejectWrite)
                 {
                     return false;
@@ -576,25 +578,25 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 清理旧日志
-        /// 当日志文件超过大小限制时，保留最新的日志内容
-        /// 修复：使用原子写入防止符号链接攻击
+        /// Cleans old logs
+        /// When log file exceeds size limit, keeps the latest log content
+        /// Fix: uses atomic write to prevent symbolic link attacks
         /// </summary>
         private static void CheckAndCleanLogFile()
         {
             try
             {
-                // 获取锁，确保在清理日志时不会有其他线程写入日志
+                // Acquire lock to ensure no other thread writes logs while cleaning
                 lock (_logLock)
                 {
                     if (File.Exists(_logFilePath))
                     {
                         FileInfo fileInfo = new FileInfo(_logFilePath);
 
-                        // 如果日志文件超过大小限制，清理旧日志
+                        // Clean old logs if log file exceeds size limit
                         if (fileInfo.Length > _logFileSizeLimit)
                         {
-                            // 使用流式读取，避免一次性加载大文件到内存
+                            // Use streaming read to avoid loading entire large file into memory at once
                             var linesToKeep = new Queue<string>(_linesToKeepOnClean + 1);
 
                             using (var reader = new StreamReader(_logFilePath, Encoding.UTF8))
@@ -603,7 +605,7 @@ namespace FirewallManager
                                 while ((line = reader.ReadLine()) != null)
                                 {
                                     linesToKeep.Enqueue(line);
-                                    // 保持队列大小不超过_linesToKeepOnClean
+                                    // Keep queue size not exceeding _linesToKeepOnClean
                                     if (linesToKeep.Count > _linesToKeepOnClean)
                                     {
                                         linesToKeep.Dequeue();
@@ -611,7 +613,7 @@ namespace FirewallManager
                                 }
                             }
 
-                            // 使用原子写入替换日志内容（防止符号链接攻击）
+                            // Use atomic write to replace log content (prevents symbolic link attacks)
                             AtomicReplaceLogContent(tempFs =>
                             {
                                 using (var writer = new StreamWriter(tempFs, Encoding.UTF8, leaveOpen: true))
@@ -627,25 +629,27 @@ namespace FirewallManager
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.WriteLine($"Log error during ClearLogs: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// 清空所有日志
-        /// 修复：使用原子写入防止符号链接攻击
+        /// Clears all logs
+        /// Fix: uses atomic write to prevent symbolic link attacks
         /// </summary>
         public static void ClearLogs()
         {
             try
             {
-                // 使用原子写入清空日志（防止符号链接攻击）
-                // 不写入任何内容即清空日志文件
+                // Use atomic write to clear logs (prevents symbolic link attacks)
+                // Writing no content clears the log file
                 AtomicReplaceLogContent(_ => true);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.WriteLine($"Log error during ClearLogs: {ex.Message}");
             }
         }
     }

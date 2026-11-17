@@ -8,46 +8,46 @@ using System.Text.Json.Serialization;
 namespace FirewallManager
 {
     /// <summary>
-    /// 配置持久化服务
-    /// 统一管理监控目标、语言选择、自动监控开关的持久化
+    /// Configuration persistence service
+    /// Uniformly manages persistence of monitoring targets, language selection, and the auto-monitor toggle.
     /// Schema v2: { "version": 2, "language": "zh", "autoMonitor": true, "targets": ["..."] }
-    /// 兼容 v1: 纯字符串数组 ["path1", "path2"]
+    /// Backward compatible with v1: plain string array ["path1", "path2"]
     /// </summary>
     public static class TargetStore
     {
         /// <summary>
-        /// 当前 schema 版本
+        /// Current schema version
         /// </summary>
         public const int CurrentVersion = 2;
 
         /// <summary>
-        /// 配置数据结构
+        /// Configuration data structure
         /// </summary>
         public class ConfigData
         {
-            /// <summary>Schema 版本号</summary>
+            /// <summary>Schema version number</summary>
             [JsonPropertyName("version")]
             public int Version { get; set; } = CurrentVersion;
 
-            /// <summary>语言代码（如 "zh-CN"、"en-US"）</summary>
+            /// <summary>Language code (e.g., "zh-CN", "en-US")</summary>
             [JsonPropertyName("language")]
             public string Language { get; set; }
 
-            /// <summary>是否启用自动监控</summary>
+            /// <summary>Whether auto-monitor is enabled</summary>
             [JsonPropertyName("autoMonitor")]
             public bool AutoMonitor { get; set; } = false;
 
-            /// <summary>监控目标路径列表</summary>
+            /// <summary>List of monitoring target paths</summary>
             [JsonPropertyName("targets")]
             public List<string> Targets { get; set; } = new List<string>();
         }
 
         /// <summary>
-        /// 加载配置（含完整性校验和 v1 自动迁移）
-        /// 完整性校验失败时降级为直接读取，保证向后兼容性
+        /// Loads configuration (includes integrity verification and automatic v1 migration)
+        /// When integrity verification fails, falls back to direct reading to preserve backward compatibility.
         /// </summary>
-        /// <param name="configPath">配置文件路径</param>
-        /// <returns>配置数据；加载失败返回 null</returns>
+        /// <param name="configPath">Configuration file path</param>
+        /// <returns>Configuration data; null when loading fails</returns>
         public static ConfigData Load(string configPath)
         {
             if (string.IsNullOrEmpty(configPath))
@@ -62,11 +62,11 @@ namespace FirewallManager
                 return null;
             }
 
-            // 加载前验证配置文件完整性（原子操作，防止TOCTOU攻击）
+            // Verify configuration file integrity before loading (atomic operation to prevent TOCTOU attacks).
             string json;
             if (Config.VerifyConfigIntegrityAndRead(configPath, out json))
             {
-                // 完整性校验通过
+                // Integrity verification passed.
                 if (string.IsNullOrWhiteSpace(json))
                 {
                     LogManager.Warning("Config file is empty");
@@ -76,10 +76,28 @@ namespace FirewallManager
                 return ParseConfig(json);
             }
 
-            // 完整性校验失败 —— 降级处理：尝试直接读取配置文件
-            // 场景：旧版本配置无 .hmac 文件、校验文件丢失、或配置被外部编辑
+            // Integrity verification failed.
+            // Fail-closed by default: a config that fails verification is not loaded and is NOT
+            // re-signed. Re-signing would turn the integrity mechanism into a no-op, because whoever
+            // can write the file could then have their content blessed on the next start.
             LogManager.Warning(LangManager.GetText("logMessages.configIntegrityVerificationFailed"));
-            LogManager.Warning("Attempting fallback: reading config file directly");
+
+            // The single permitted exception is a first-run migration of a legacy v1 array.
+            // It requires that (a) no integrity file exists yet, (b) the HMAC key has never been
+            // created, and (c) the application data directory is actually protected. Without (c) a
+            // same-user process could plant a crafted v1 array, which would then be signed by this
+            // elevated process.
+            if (Config.IntegrityFileExists(configPath) || Config.HmacKeyFileExists())
+            {
+                LogManager.Error("Config integrity verification failed. Refusing to load tampered or unverifiable config.");
+                return null;
+            }
+
+            if (!Config.IsAppDataDirectorySecured)
+            {
+                LogManager.Error("Config integrity cannot be trusted: the application data directory is not protected. Refusing legacy migration.");
+                return null;
+            }
 
             try
             {
@@ -87,7 +105,7 @@ namespace FirewallManager
             }
             catch (Exception ex)
             {
-                LogManager.Error($"Failed to read config file for fallback: {ex.Message}");
+                LogManager.Error($"Failed to read config file for v1 migration: {ex.Message}");
                 return null;
             }
 
@@ -97,27 +115,32 @@ namespace FirewallManager
                 return null;
             }
 
-            // 尝试解析配置
-            var data = ParseConfig(json);
-            if (data == null)
+            // Only a v1 legacy array may be migrated; any other shape is rejected.
+            if (!json.TrimStart().StartsWith("["))
             {
-                LogManager.Error("Config file integrity check failed and parsing failed, file may be corrupted");
+                LogManager.Error("Integrity verification failed and the file is not a legacy v1 array. Refusing to load.");
                 return null;
             }
 
-            // 解析成功，自动修复完整性校验
-            LogManager.Warning("Config loaded via fallback path. Integrity hash will be regenerated.");
+            var data = ParseConfig(json);
+            if (data == null)
+            {
+                LogManager.Error("Legacy config parsing failed, file may be corrupted");
+                return null;
+            }
+
+            LogManager.Info("Legacy v1 config migrated to v2 and signed");
             Config.SaveConfigIntegrityHash(configPath);
 
             return data;
         }
 
         /// <summary>
-        /// 解析配置 JSON（支持 v1/v2 格式自动识别）
-        /// 先检测 JSON 结构再选择反序列化方式，避免 v1 数组反序列化为 v2 对象时抛异常
+        /// Parses configuration JSON (supports automatic detection of v1 / v2 format)
+        /// Detects the JSON structure first, then chooses how to deserialize — avoids exceptions when a v1 array is deserialized as a v2 object.
         /// </summary>
-        /// <param name="json">JSON 字符串</param>
-        /// <returns>配置数据；解析失败返回 null</returns>
+        /// <param name="json">JSON string</param>
+        /// <returns>Configuration data; null when parsing fails</returns>
         private static ConfigData ParseConfig(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
@@ -127,7 +150,7 @@ namespace FirewallManager
             {
                 var options = ComHelper.SafeJsonOptions;
 
-                // 根据 JSON 结构判断格式：以 { 开头为 v2 对象，以 [ 开头为 v1 数组
+                // Determine the format from the JSON structure: starts with { → v2 object, starts with [ → v1 array.
                 string trimmed = json.TrimStart();
 
                 if (trimmed.StartsWith("{"))
@@ -136,7 +159,7 @@ namespace FirewallManager
                     var config = JsonSerializer.Deserialize<ConfigData>(json, options);
                     if (config != null && config.Version > 0)
                     {
-                        // 验证 language 字段格式，防止路径遍历
+                        // Validate the language field format to prevent path-traversal.
                         if (!string.IsNullOrEmpty(config.Language) && !IsValidLanguageCode(config.Language))
                         {
                             LogManager.Warning($"Invalid language code in config, ignoring: {config.Language}");
@@ -183,21 +206,21 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证语言代码格式（符合 BCP 47 标准，如 "zh", "en", "zh-CN"）
-        /// 防止路径遍历和注入攻击
+        /// Validates the language code format (compliant with BCP 47, e.g., "zh", "en", "zh-CN")
+        /// Prevents path-traversal and injection attacks.
         /// </summary>
-        /// <param name="languageCode">语言代码</param>
-        /// <returns>是否有效</returns>
+        /// <param name="languageCode">Language code</param>
+        /// <returns>True if valid</returns>
         private static bool IsValidLanguageCode(string languageCode)
         {
             if (string.IsNullOrEmpty(languageCode) || languageCode.Length > 16)
                 return false;
 
-            // 验证符合 BCP 47 标准的语言代码格式
-            // 主要语言代码: 2-3字母，可选子标签: 2字母国家代码或3字母数字代码
+            // Validate language code format per BCP 47.
+            // Primary subtag: 2–3 letters; optional subtags: 2-letter country code or 3-letter numeric code.
             string[] parts = languageCode.Split('-');
             
-            // 主语言代码验证
+            // Primary subtag validation.
             if (parts.Length == 0 || string.IsNullOrEmpty(parts[0]))
                 return false;
                 
@@ -211,7 +234,7 @@ namespace FirewallManager
                     return false;
             }
 
-            // 子标签验证（国家代码、脚本等）
+            // Subtag validation (country codes, scripts, etc.).
             for (int i = 1; i < parts.Length; i++)
             {
                 string subtag = parts[i];
@@ -229,11 +252,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 保存配置（含原子写入和完整性校验更新）
+        /// Saves configuration (includes atomic write and integrity-check update).
         /// </summary>
-        /// <param name="configPath">配置文件路径</param>
-        /// <param name="data">配置数据</param>
-        /// <returns>是否保存成功</returns>
+        /// <param name="configPath">Configuration file path</param>
+        /// <param name="data">Configuration data</param>
+        /// <returns>True if save succeeded</returns>
         public static bool Save(string configPath, ConfigData data)
         {
             if (string.IsNullOrEmpty(configPath))
@@ -261,7 +284,7 @@ namespace FirewallManager
                     Directory.CreateDirectory(configDir);
                 }
 
-                // 确保版本号正确
+                // Ensure the version number is correct.
                 data.Version = CurrentVersion;
 
                 var options = new JsonSerializerOptions
@@ -273,7 +296,7 @@ namespace FirewallManager
 
                 ComHelper.AtomicWriteAllText(configPath, json, Config.Utf8NoBom);
 
-                // 保存后立即更新完整性校验值
+                // Update the integrity hash immediately after saving.
                 if (!Config.SaveConfigIntegrityHash(configPath))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.configIntegrityHashSaveFailed"));

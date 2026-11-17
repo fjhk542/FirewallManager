@@ -211,18 +211,6 @@ FirewallManager是一个Windows防火墙出站规则管理工具，用于帮助�
 
 - 规则详情窗体，用于查看和编辑防火墙规则详情
 
-### 测试项目
-
-| 文件 | 描述 |
-|------------|-------------------|
-| FirewallManager.Tests.csproj | 测试项目配置文件 |
-| FirewallServiceTests.cs | 防火墙服务单元测试 |
-| LogManagerTests.cs | 日志管理单元测试（含日志注入防御测试） |
-| LangManagerTests.cs | 国际化管理单元测试（含回退机制测试） |
-| PathSecurityTests.cs | 路径安全验证单元测试 |
-| WhitelistFormTests.cs | 白名单管理单元测试 |
-| ConfigTests.cs | 配置类单元测试 |
-
 ## 技术实现
 
 ### 1. 防火墙规则管理
@@ -317,26 +305,6 @@ dotnet build -c Debug
 
 > 注意：无论 Debug 还是 Release 编译，均不生成调试符号（DebugType=none, DebugSymbols=false）。
 > Release 编译会自动去除所有 `[Conditional("DEBUG")]` 方法。
-
-### 运行测试
-
-项目包含 xUnit 单元测试套件，共 76 个测试用例，覆盖所有核心功能模块：
-
-```cmd
-cd FirewallManager.Tests
-dotnet test
-```
-
-#### 测试覆盖范围
-
-| 测试模块 | 测试数 | 覆盖内容 |
-|------------|--------|------------------------------|
-| FirewallService | 17 | 规则管理、COM 类型安全、路径哈希、规则名称清理 |
-| LogManager | 20 | 日志注入防御、控制字符过滤、敏感信息脱敏、多级别日志 |
-| LangManager | 14 | 翻译获取、回退机制、格式化参数、语言切换 |
-| PathSecurity | 14 | 符号链接检测、路径规范化、系统目录防护、TOCTOU 缓解 |
-| WhitelistForm | 5 | 白名单查找、空值防护、缓存一致性 |
-| Config | 11 | 关键程序列表完整性、配置常量验证 |
 
 ### 调试说明
 

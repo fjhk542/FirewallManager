@@ -13,11 +13,11 @@ namespace FirewallManager
         private bool originalEnabled;
         
         /// <summary>
-        /// 构造函数
+        /// Constructor
         /// </summary>
-        /// <param name="rule">防火墙规则信息</param>
-        /// <param name="name">规则名称</param>
-        /// <param name="service">防火墙服务</param>
+        /// <param name="rule">Firewall rule info</param>
+        /// <param name="name">Rule name</param>
+        /// <param name="service">Firewall service</param>
         public RuleDetailsForm(RuleDetailsInfo rule, string name, IFirewallService service)
         {
             if (rule == null)
@@ -40,7 +40,7 @@ namespace FirewallManager
             ruleName = name;
             firewallService = service;
             
-            // 覆盖设计器生成的硬编码文本
+            // Override designer-generated hardcoded text
             this.Text = LangManager.GetText("form.ruleDetails.title");
             label1.Text = LangManager.GetText("form.ruleDetails.ruleName");
             label2.Text = LangManager.GetText("form.ruleDetails.description");
@@ -48,7 +48,7 @@ namespace FirewallManager
             label4.Text = LangManager.GetText("form.ruleDetails.direction");
             label5.Text = LangManager.GetText("form.ruleDetails.action");
             
-            // 更新下拉框选项
+            // Update combo box options
             cmbDirection.Items.Clear();
             cmbDirection.Items.AddRange(new object[] {
                 LangManager.GetText("form.ruleDetails.inbound"),
@@ -61,7 +61,7 @@ namespace FirewallManager
                 LangManager.GetText("form.ruleDetails.allow")
             });
             
-            // 更新复选框和按钮文本
+            // Update checkbox and button text
             chkEnabled.Text = LangManager.GetText("form.ruleDetails.enabled");
             btnSave.Text = LangManager.GetText("buttons.save");
             btnCancel.Text = LangManager.GetText("buttons.cancel");
@@ -70,7 +70,7 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 加载规则详情
+        /// Load rule details
         /// </summary>
         private void LoadRuleDetails()
         {
@@ -100,10 +100,10 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 保存按钮点击事件
+        /// Save button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnSave_Click(object sender, EventArgs e)
         {
             try
@@ -164,26 +164,26 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 取消按钮点击事件
+        /// Cancel button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnCancel_Click(object sender, EventArgs e)
         {
             this.Close();
         }
         
-        #region Windows 窗体设计器生成的代码
+        #region Windows Forms Designer Generated Code
         /// <summary>
-        /// 必需的设计器变量
-        /// 用于管理窗体组件的生命周期
+        /// Required designer variable
+        /// Used to manage the lifecycle of form components
         /// </summary>
         private System.ComponentModel.IContainer components = null;
         
         /// <summary>
-        /// 清理所有正在使用的资源
+        /// Clean up all resources in use
         /// </summary>
-        /// <param name="disposing">如果应释放托管资源，为 true；否则为 false</param>
+        /// <param name="disposing">true if managed resources should be disposed; otherwise, false</param>
         protected override void Dispose(bool disposing)
         {
             if (disposing && (components != null))
@@ -194,8 +194,8 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 设计器支持所需的方法 - 不要使用代码编辑器修改此方法的内容
-        /// 初始化所有UI控件，设置其属性、布局和事件处理程序
+        /// Method required by designer support - do not modify the contents of this method with the code editor
+        /// Initialize all UI controls, set their properties, layout and event handlers
         /// </summary>
         private void InitializeComponent()
         {

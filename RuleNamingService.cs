@@ -5,22 +5,22 @@ using System.Security.Cryptography;
 namespace FirewallManager
 {
     /// <summary>
-    /// 规则命名服务
-    /// 统一规则名构建逻辑的唯一来源，消除 5 处重复代码
-    /// 规则名格式: Block_{sanitizedFileName}_{32位hash}
+    /// Rule naming service
+    /// Single source of truth for rule name construction logic, eliminates 5 duplicate code locations
+    /// Rule name format: Block_{sanitizedFileName}_{32-char hash}
     /// </summary>
     public static class RuleNamingService
     {
         /// <summary>
-        /// 规则名最大长度（文件名部分）
+        /// Max rule name length (file name portion)
         /// </summary>
         private const int MaxRuleNameLength = 60;
 
         /// <summary>
-        /// 根据可执行文件路径构建防火墙规则名
+        /// Build firewall rule name from executable file path
         /// </summary>
-        /// <param name="exePath">可执行文件路径</param>
-        /// <returns>规则名称（格式: Block_{sanitizedFileName}_{32位hash}）</returns>
+        /// <param name="exePath">Executable file path</param>
+        /// <returns>Rule name (format: Block_{sanitizedFileName}_{32-char hash})</returns>
         public static string BuildRuleName(string exePath)
         {
             if (string.IsNullOrEmpty(exePath))
@@ -28,18 +28,36 @@ namespace FirewallManager
                 throw new ArgumentException("可执行文件路径不能为空", nameof(exePath));
             }
 
+            return BuildRuleNameWithHash(exePath, GetPathHash(NormalizePath(exePath)));
+        }
+
+        /// <summary>
+        /// Canonical form used for hashing: full path, backslash separators, invariant lowercase.
+        /// Windows path comparison is case-insensitive, so hashing the raw string would produce two
+        /// different rule names for the same file depending on how the caller spelled the path
+        /// (the FileSystemWatcher reports the on-disk casing while a directory scan reuses the
+        /// user's spelling of the root). That mismatch defeats de-duplication and creates duplicates.
+        /// </summary>
+        /// <param name="path">Raw path</param>
+        /// <returns>Canonical path used as hash input</returns>
+        private static string NormalizePath(string path)
+        {
+            return System.IO.Path.GetFullPath(path).Replace('/', '\\').ToLowerInvariant();
+        }
+
+        private static string BuildRuleNameWithHash(string exePath, string pathHash)
+        {
             string fileName = System.IO.Path.GetFileNameWithoutExtension(exePath);
             string sanitizedFileName = SanitizeRuleName(fileName);
-            string pathHash = GetPathHash(exePath);
             return $"{Config.RULE_NAME_PREFIX}{sanitizedFileName}_{pathHash}";
         }
 
         /// <summary>
-        /// 清理规则名称中的不安全字符
-        /// 过滤控制字符和文件系统保留字符，防止规则名称注入
+        /// Sanitize unsafe characters in rule name
+        /// Filter control characters and file system reserved characters to prevent rule name injection
         /// </summary>
-        /// <param name="input">输入字符串</param>
-        /// <returns>清理后的安全字符串</returns>
+        /// <param name="input">Input string</param>
+        /// <returns>Sanitized safe string</returns>
         public static string SanitizeRuleName(string input)
         {
             if (string.IsNullOrEmpty(input))
@@ -47,7 +65,7 @@ namespace FirewallManager
                 return input;
             }
 
-            // 过滤控制字符（0x00-0x1F, 0x7F）和文件系统保留字符，防止规则名称注入
+            // Filter control characters (0x00-0x1F, 0x7F) and file system reserved characters to prevent rule name injection
             char[] buffer = new char[input.Length];
             int pos = 0;
             foreach (char c in input)
@@ -63,7 +81,7 @@ namespace FirewallManager
             }
             string sanitized = new string(buffer, 0, pos);
 
-            // 限制规则名称长度（防火墙规则名称通常限制在 64-128 字符）
+            // Limit rule name length (firewall rule names are typically limited to 64-128 characters)
             if (sanitized.Length > MaxRuleNameLength)
             {
                 sanitized = sanitized.Substring(0, MaxRuleNameLength);
@@ -73,11 +91,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 计算文件路径的哈希值
-        /// 使用 SHA256 取前 16 字节（32 个十六进制字符），降低哈希碰撞概率
+        /// Compute file path hash
+        /// Use SHA256 and take first 16 bytes (32 hex chars) to reduce hash collision probability
         /// </summary>
-        /// <param name="path">文件路径</param>
-        /// <returns>32 字符的十六进制哈希字符串</returns>
+        /// <param name="path">File path</param>
+        /// <returns>32-character hex hash string</returns>
         public static string GetPathHash(string path)
         {
             if (string.IsNullOrEmpty(path))
@@ -88,44 +106,46 @@ namespace FirewallManager
             using (var sha256 = SHA256.Create())
             {
                 byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(path));
-                // 取前 16 字节并转换为小写十六进制字符串（32 字符）
-                // 使用 Convert.ToHexString 替代手动 StringBuilder 拼接，性能更优
+                // Take first 16 bytes and convert to lowercase hex string (32 chars)
+                // Use Convert.ToHexString instead of manual StringBuilder concatenation for better performance
                 return Convert.ToHexString(hashBytes, 0, 16).ToLowerInvariant();
             }
         }
 
         /// <summary>
-        /// 验证规则名是否由本程序创建
-        /// 规则名格式: Block_{sanitizedFileName}_{32位hex hash}
+        /// Verify if rule name was created by this program.
+        /// Rule name format: Block_{sanitizedFileName}_{32-char hex hash}
+        /// WARNING: this only checks the shape of the name. It cannot tell whether this program really
+        /// created the rule. Use <see cref="IsRuleOwnedByUs"/> before deleting anything.
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <returns>是否由本程序创建</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <returns>Whether the name matches this program's naming scheme</returns>
         public static bool IsRuleCreatedByUs(string ruleName)
         {
             if (string.IsNullOrEmpty(ruleName))
                 return false;
 
-            // 必须以 Block_ 开头
+            // Must start with Block_
             if (!ruleName.StartsWith(Config.RULE_NAME_PREFIX))
                 return false;
 
-            // 去除前缀后的部分必须包含下划线分隔符
+            // The portion after prefix must contain underscore separator
             string rest = ruleName.Substring(Config.RULE_NAME_PREFIX.Length);
             int lastUnderscoreIndex = rest.LastIndexOf('_');
             if (lastUnderscoreIndex <= 0)
                 return false;
 
-            // 文件名部分不为空
+            // File name portion must not be empty
             string fileNamePart = rest.Substring(0, lastUnderscoreIndex);
             if (string.IsNullOrEmpty(fileNamePart))
                 return false;
 
-            // 哈希值部分必须是 32 字符的十六进制字符串
+            // Hash portion must be a 32-character hex string
             string hashPart = rest.Substring(lastUnderscoreIndex + 1);
             if (string.IsNullOrEmpty(hashPart) || hashPart.Length != 32)
                 return false;
 
-            // 验证 hashPart 只包含十六进制字符
+            // Verify hashPart contains only hex characters
             foreach (char c in hashPart)
             {
                 if (!IsHexChar(c))
@@ -136,7 +156,40 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 判断字符是否为十六进制字符
+        /// Verifies that a rule was really created by this program for the given executable path.
+        /// The path hash embedded in the name must equal the hash recomputed from the rule's
+        /// ApplicationName, which binds the name to a concrete path instead of trusting its shape.
+        /// </summary>
+        /// <param name="ruleName">Rule name as reported by the firewall API</param>
+        /// <param name="applicationPath">Rule's ApplicationName property</param>
+        /// <returns>true only when the name is the one this program would have generated for that path</returns>
+        public static bool IsRuleOwnedByUs(string ruleName, string applicationPath)
+        {
+            if (!IsRuleCreatedByUs(ruleName) || string.IsNullOrEmpty(applicationPath))
+                return false;
+
+            try
+            {
+                string expectedName = BuildRuleName(applicationPath);
+                if (string.Equals(ruleName, expectedName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // Rules written before path normalization hashed the raw path string. Accept that
+                // legacy form as well, otherwise those rules could never be recognized, deleted or
+                // cleaned up after an upgrade.
+                string legacyName = BuildRuleNameWithHash(applicationPath, GetPathHash(applicationPath));
+                return string.Equals(ruleName, legacyName, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception)
+            {
+                // ApplicationName values written by other products are not guaranteed to be valid
+                // paths; anything that cannot be normalized is simply not ours.
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Determine if character is a hex character
         /// </summary>
         private static bool IsHexChar(char c)
         {

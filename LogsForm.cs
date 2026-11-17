@@ -8,13 +8,13 @@ using System.Windows.Forms;
 namespace FirewallManager
 {
     /// <summary>
-    /// 日志查看窗口
-    /// 用于显示和管理操作日志
+    /// Log Viewer Window
+    /// Used to display and manage operation logs
     /// </summary>
     public partial class LogsForm : Form
     {
         #region UI Controls
-        // UI 控件定义
+        // UI control definitions
         private System.Windows.Forms.Button btnRefresh;
         private System.Windows.Forms.Button btnClearLogs;
         private System.Windows.Forms.Button btnCopyLogs;
@@ -25,22 +25,22 @@ namespace FirewallManager
         #endregion
 
         /// <summary>
-        /// 构造函数
-        /// 初始化日志查看窗口，包括UI组件和日志加载
+        /// Constructor
+        /// Initialize log viewer window, including UI components and log loading
         /// </summary>
         public LogsForm()
         {
-            // 初始化
+            // Initialize
             this.Text = LangManager.GetText("form.logs.title");
             this.Size = new Size(800, 600);
             
-            // 创建基本控件
+            // Create basic controls
             logsTextBox = new TextBox();
             logsTextBox.Multiline = true;
             logsTextBox.Dock = DockStyle.Fill;
             logsTextBox.ReadOnly = true;
             logsTextBox.ScrollBars = ScrollBars.Vertical;
-            // 使用系统默认字体
+            // Use system default font
             logsTextBox.Font = new Font(SystemFonts.DefaultFont.FontFamily, 9F, FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
             
             btnRefresh = new Button();
@@ -72,7 +72,7 @@ namespace FirewallManager
             saveFileDialog.Filter = LangManager.GetText("messages.textFileFilter");
             saveFileDialog.Title = LangManager.GetText("messages.exportLogs");
             
-            // 布局
+            // Layout
             TableLayoutPanel panel = new TableLayoutPanel();
             panel.Dock = DockStyle.Fill;
             panel.ColumnCount = 5;
@@ -85,11 +85,11 @@ namespace FirewallManager
             panel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20F));
             panel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20F));
             
-            // 第一行：日志文本框（跨5列）
+            // Row 1: Log text box (spans 5 columns)
             panel.SetColumnSpan(logsTextBox, 5);
             panel.Controls.Add(logsTextBox, 0, 0);
             
-            // 第二行：所有功能按钮
+            // Row 2: All function buttons
             panel.Controls.Add(btnRefresh, 0, 1);
             panel.Controls.Add(btnClearLogs, 1, 1);
             panel.Controls.Add(btnCopyLogs, 2, 1);
@@ -98,23 +98,23 @@ namespace FirewallManager
             
             this.Controls.Add(panel);
             
-            // 加载日志
+            // Load logs
             LoadLogs();
         }
 
         /// <summary>
-        /// 加载日志
-        /// 从LogManager读取日志内容并显示在文本框中
+        /// Load logs
+        /// Read log content from LogManager and display in text box
         /// </summary>
         private void LoadLogs()
         {
             try
             {
-                // 从LogManager获取实际的日志内容
+                // Get actual log content from LogManager
                 var logLines = LogManager.ReadLogs();
                 StringBuilder logContent = new StringBuilder();
                 
-                // 限制显示的日志内容大小（最大500KB），防止UI卡死
+                // Limit displayed log content size (max 500KB) to prevent UI freeze
                 const int maxLogDisplaySize = 500 * 1024;
                 
                 if (logLines.Count > 0)
@@ -143,31 +143,31 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 刷新按钮点击事件
+        /// Refresh button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnRefresh_Click(object sender, EventArgs e)
         {
             LoadLogs();
         }
 
         /// <summary>
-        /// 清空日志按钮点击事件
+        /// Clear logs button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnClearLogs_Click(object sender, EventArgs e)
         {
             if (MessageBox.Show(LangManager.GetText("messages.clearLogsConfirm"), LangManager.GetText("messages.clearLogsConfirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
             {
                 try
                 {
-                    // 清空实际日志文件
+                    // Clear actual log file
                     LogManager.ClearLogs();
-                    // 清空界面显示
+                    // Clear UI display
                     logsTextBox.Clear();
-                    // 显示暂无日志记录
+                    // Display no logs message
                     logsTextBox.Text = LangManager.GetText("messages.noLogs");
                 }
                 catch (Exception ex)
@@ -178,10 +178,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 复制日志按钮点击事件
+        /// Copy logs button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnCopyLogs_Click(object sender, EventArgs e)
         {
             try
@@ -198,10 +198,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 导出日志按钮点击事件
+        /// Export logs button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnExportLogs_Click(object sender, EventArgs e)
         {
             try
@@ -216,10 +216,10 @@ namespace FirewallManager
                 {
                     string exportPath = saveFileDialog.FileName;
                     
-                    // 验证导出路径安全性，防止路径遍历攻击
+                    // Validate export path security, prevent path traversal attacks
                     string normalizedExportPath = Path.GetFullPath(exportPath);
                     
-                    // 检查导出路径是否包含 UNC 路径或设备路径等特殊前缀
+                    // Check if export path contains UNC path or special device path prefixes
                     if (normalizedExportPath.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
                     {
                         LogManager.Warning(LangManager.GetText("logMessages.exportPathUncNotAllowed"));
@@ -227,7 +227,7 @@ namespace FirewallManager
                         return;
                     }
                     
-                    // 验证目标目录是否存在
+                    // Verify target directory exists
                     string exportDir = Path.GetDirectoryName(normalizedExportPath);
                     if (!string.IsNullOrEmpty(exportDir) && !Directory.Exists(exportDir))
                     {
@@ -246,19 +246,19 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 关闭按钮点击事件
+        /// Close button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnClose_Click(object sender, EventArgs e)
         {
             this.Close();
         }
 
         /// <summary>
-        /// 释放资源
+        /// Release resources
         /// </summary>
-        /// <param name="disposing">是否释放托管资源</param>
+        /// <param name="disposing">Whether to release managed resources</param>
         protected override void Dispose(bool disposing)
         {
             if (disposing)

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Security.Cryptography;
 
 namespace FirewallManager
@@ -9,115 +10,120 @@ namespace FirewallManager
     public static class Config
     {
         /// <summary>
-        /// 不带 BOM 的 UTF-8 编码，用于 JSON 文件读写
-        /// 避免 BOM 导致 JSON 解析错误
+        /// UTF-8 encoding without BOM, used for JSON file read/write
+        /// Prevents BOM from causing JSON parsing errors
         /// </summary>
         public static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
 
         /// <summary>
-        /// 规则名称前缀
+        /// JSON serialization options for export/readable configs.
+        /// </summary>
+        public static readonly JsonSerializerOptions ExportJsonOptions = new JsonSerializerOptions { WriteIndented = true };
+
+        /// <summary>
+        /// Rule name prefix
         /// </summary>
         public const string RULE_NAME_PREFIX = "Block_";
 
         /// <summary>
-        /// 默认语言
+        /// Default language
         /// </summary>
         public const string DEFAULT_LANGUAGE = "zh";
 
         /// <summary>
-        /// 白名单文件名
+        /// Whitelist file name
         /// </summary>
         public const string WHITELIST_FILE = "whitelist.json";
 
         /// <summary>
-        /// 语言文件目录
+        /// Language file directory
         /// </summary>
         public const string LANGUAGE_DIR = "Lang";
 
         /// <summary>
-        /// 配置文件名
+        /// Config file name
         /// </summary>
         public const string CONFIG_FILE = "config.json";
 
         /// <summary>
-        /// EXE文件搜索模式
+        /// EXE file search pattern
         /// </summary>
         public const string EXE_SEARCH_PATTERN = "*.exe";
 
         /// <summary>
-        /// 防火墙策略ProgID
+        /// Firewall policy ProgID
         /// </summary>
         public const string FIREWALL_POLICY_PROGID = "HNetCfg.FwPolicy2";
 
         /// <summary>
-        /// 防火墙规则ProgID
+        /// Firewall rule ProgID
         /// </summary>
         public const string FIREWALL_RULE_PROGID = "HNetCfg.FWRule";
 
         /// <summary>
-        /// 防火墙策略CLSID (NetFwPolicy2) - 从注册表验证
+        /// Firewall policy CLSID (NetFwPolicy2) - verified from registry
         /// </summary>
         public const string FIREWALL_POLICY_CLSID = "E2B3C97F-6AE1-41AC-817A-F6F92166D7DD";
 
         /// <summary>
-        /// 防火墙规则CLSID (NetFwRule) - 从注册表验证
+        /// Firewall rule CLSID (NetFwRule) - verified from registry
         /// </summary>
         public const string FIREWALL_RULE_CLSID = "2C5BC43E-3369-4C33-AB0C-BE9469677AF4";
 
         /// <summary>
-        /// 防火墙策略接口IID (INetFwPolicy2)
+        /// Firewall policy interface IID (INetFwPolicy2)
         /// </summary>
         public const string FIREWALL_POLICY_IID = "98325047-C371-474C-B5E4-70474F6D89BA";
 
         /// <summary>
-        /// 防火墙规则接口IID (INetFwRule)
+        /// Firewall rule interface IID (INetFwRule)
         /// </summary>
         public const string FIREWALL_RULE_IID = "9C4C6277-5027-441E-AFAE-CA1F542DA009";
 
         /// <summary>
-        /// 所有防火墙配置文件
+        /// All firewall profiles
         /// Domain(1) | Private(2) | Public(4) = 7
         /// </summary>
         public const int ALL_FIREWALL_PROFILES = 7;
 
         /// <summary>
-        /// 应用程序数据目录名称
+        /// Application data directory name
         /// </summary>
         public const string APP_DATA_DIR = "FirewallManager";
 
         /// <summary>
-        /// 日志文件名
+        /// Log file name
         /// </summary>
         public const string LOG_FILE_NAME = "firewall_manager.log";
 
         /// <summary>
-        /// 完整性校验文件扩展名
+        /// Integrity check file extension
         /// </summary>
         private const string INTEGRITY_FILE_EXT = ".hmac";
 
         /// <summary>
-        /// HMAC 密钥文件名（DPAPI 加密存储）
+        /// HMAC key file name (stored encrypted with DPAPI)
         /// </summary>
         private const string HMAC_KEY_FILE = "hmac.key";
 
         /// <summary>
-        /// 用于派生 HMAC 密钥的固定标记
+        /// Fixed tag used to derive the HMAC key
         /// </summary>
         private const string HMAC_KEY_TAG = "FirewallManager_Config_Integrity_v1";
 
         /// <summary>
-        /// 缓存的 HMAC 密钥（延迟初始化）
+        /// Cached HMAC key (lazy initialization)
         /// </summary>
         private static byte[] _cachedHmacKey;
 
         /// <summary>
-        /// HMAC 密钥缓存锁
+        /// HMAC key cache lock
         /// </summary>
         private static readonly object _hmacKeyLock = new object();
 
         /// <summary>
-        /// 关键程序集合（HashSet实现O(1)查找）
-        /// 这些程序不应被阻止，否则可能导致系统不稳定
+        /// Critical programs collection (HashSet for O(1) lookup)
+        /// These programs should not be blocked, otherwise system instability may result
         /// </summary>
         public static readonly HashSet<string> CRITICAL_PROGRAMS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -128,29 +134,103 @@ namespace FirewallManager
             "ntoskrnl.exe", "userinit.exe", "runtimebroker.exe", "taskmgr.exe"
         };
 
+        private static readonly object _appDataDirLock = new object();
+
         /// <summary>
-        /// 获取应用程序数据目录中的文件路径
-        /// 使用 LocalApplicationData 目录，避免DLL劫持风险
+        /// 0 = not attempted, 1 = secured, 2 = failed.
+        /// The pessimistic value is written before the ACL call so that a nested call triggered by
+        /// logging inside the ACL helper cannot re-enter the hardening block.
         /// </summary>
-        /// <param name="fileName">文件名</param>
-        /// <returns>完整的文件路径</returns>
+        private static int _appDataDirState;
+
+        /// <summary>
+        /// True when the application data directory is protected by a restrictive ACL (only
+        /// Administrators and SYSTEM can write). Trust-sensitive operations (such as accepting a
+        /// legacy unverified config) must fail closed when this is false.
+        /// </summary>
+        public static bool IsAppDataDirectorySecured
+        {
+            get { return _appDataDirState == 1; }
+        }
+
+        /// <summary>
+        /// Gets a file path within the application data directory.
+        /// The directory ACL is tightened once per process (Administrators/SYSTEM full control,
+        /// current user read-only) so that files stored here cannot be deleted or replaced by a
+        /// non-elevated process running as the same user.
+        /// </summary>
+        /// <param name="fileName">File name</param>
+        /// <returns>Full file path</returns>
         public static string GetAppDataFilePath(string fileName)
         {
-            // 使用 LocalApplicationData 目录，避免DLL劫持风险
             string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string appFolderPath = Path.Combine(appDataPath, APP_DATA_DIR);
-            
-            // 确保目录存在
+
+            // Ensure directory exists
             Directory.CreateDirectory(appFolderPath);
-            
+
+            if (_appDataDirState == 0)
+            {
+                lock (_appDataDirLock)
+                {
+                    if (_appDataDirState == 0)
+                    {
+                        // Pessimistic first: logging inside the helper must not re-enter this block.
+                        _appDataDirState = 2;
+                        if (ComHelper.SetSecureDirectoryPermissionsInternal(appFolderPath))
+                        {
+                            _appDataDirState = 1;
+                        }
+                        else
+                        {
+                            LogManager.Error($"Failed to protect the application data directory: {appFolderPath}. " +
+                                             "Integrity-sensitive features will run in a restricted mode.");
+                        }
+                    }
+                }
+            }
+
             return Path.Combine(appFolderPath, fileName);
         }
 
         /// <summary>
-        /// 生成机器特定的 HMAC 密钥
-        /// 使用 DPAPI 加密存储密钥，防止本地攻击者重建密钥
+        /// Returns true when the HMAC key file already exists, i.e. the integrity mechanism has been
+        /// initialized by a previous run.
         /// </summary>
-        /// <returns>HMAC 密钥字节数组</returns>
+        public static bool HmacKeyFileExists()
+        {
+            try
+            {
+                return File.Exists(GetAppDataFilePath(HMAC_KEY_FILE));
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Returns true when an integrity (.hmac) file exists for the given config file.
+        /// </summary>
+        /// <param name="configFilePath">Config file path</param>
+        public static bool IntegrityFileExists(string configFilePath)
+        {
+            try
+            {
+                return !string.IsNullOrEmpty(configFilePath)
+                    && File.Exists(GetIntegrityFilePath(configFilePath));
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Generates a machine-specific HMAC key
+        /// Uses DPAPI to encrypt and store the key, preventing local attackers from reconstructing it
+        /// </summary>
+        /// <returns>HMAC key byte array</returns>
         private static byte[] GenerateHmacKey()
         {
             lock (_hmacKeyLock)
@@ -188,7 +268,7 @@ namespace FirewallManager
                 }
                 catch
                 {
-                    // 密钥文件读取或解密失败，生成新密钥
+                    // Key file read or decryption failed; generate a new key
                 }
 
                 byte[] newKey = GenerateNewHmacKey();
@@ -211,10 +291,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 生成新的 HMAC 密钥
-        /// 使用 MachineGuid + 随机熵 + 硬编码标记 通过 SHA256 派生
+        /// Generates a new HMAC key
+        /// Derived via SHA256 using MachineGuid + random entropy + hardcoded tag
         /// </summary>
-        /// <returns>HMAC 密钥字节数组</returns>
+        /// <returns>HMAC key byte array</returns>
         private static byte[] GenerateNewHmacKey()
         {
             try
@@ -230,14 +310,14 @@ namespace FirewallManager
                     }
                     else
                     {
-                        // 如果 MachineGuid 不可用或格式无效，使用回退机制
+                        // Fallback if MachineGuid is unavailable or has an invalid format
                         LogManager.Info("MachineGuid not available or invalid, using fallback key generation");
                         machineKey = GenerateFallbackMachineKey();
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 无法读取 MachineGuid 时使用回退机制
+                    // Use fallback when MachineGuid cannot be read
                     LogManager.Warning($"Failed to read MachineGuid: {ex.Message}, using fallback key generation");
                     machineKey = GenerateFallbackMachineKey();
                 }
@@ -268,7 +348,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证 GUID 格式是否有效
+        /// Validates whether a GUID format is valid
         /// </summary>
         private static bool IsValidGuidFormat(string guidString)
         {
@@ -279,8 +359,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 生成回退机器密钥（当 MachineGuid 不可用时）
-        /// 使用计算机名称和用户信息生成机器唯一标识
+        /// Generates a fallback machine key (when MachineGuid is unavailable)
+        /// Produces a machine-unique identifier using machine name and user info
         /// </summary>
         private static string GenerateFallbackMachineKey()
         {
@@ -294,18 +374,18 @@ namespace FirewallManager
             }
             catch
             {
-                // 最终回退到完全随机的密钥
+                // Final fallback to a completely random key
                 return HMAC_KEY_TAG + "_" + Guid.NewGuid().ToString();
             }
         }
 
         /// <summary>
-        /// 计算字节数组的 HMAC-SHA256 完整性校验值
-        /// 使用 Convert.ToHexString 替代手动 StringBuilder 拼接，与 RuleNamingService 保持一致
+        /// Computes the HMAC-SHA256 integrity check value of a byte array
+        /// Uses Convert.ToHexString instead of manual StringBuilder concatenation for consistency with RuleNamingService
         /// </summary>
-        /// <param name="data">待计算的字节数据</param>
-        /// <param name="key">HMAC 密钥</param>
-        /// <returns>小写十六进制字符串</returns>
+        /// <param name="data">Byte data to compute</param>
+        /// <param name="key">HMAC key</param>
+        /// <returns>Lowercase hexadecimal string</returns>
         private static string ComputeHmacHex(byte[] data, byte[] key)
         {
             using (var hmac = new HMACSHA256(key))
@@ -316,10 +396,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 计算文件的 HMAC-SHA256 完整性校验值
+        /// Computes the HMAC-SHA256 integrity check value of a file
         /// </summary>
-        /// <param name="filePath">文件路径</param>
-        /// <returns>完整性校验值的十六进制字符串，失败返回 null</returns>
+        /// <param name="filePath">File path</param>
+        /// <returns>Hexadecimal string of the integrity check value, null on failure</returns>
         private static string ComputeFileIntegrityHash(string filePath)
         {
             try
@@ -340,20 +420,20 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 获取与配置文件关联的完整性校验文件路径
+        /// Gets the path of the integrity check file associated with a config file
         /// </summary>
-        /// <param name="configFilePath">配置文件路径</param>
-        /// <returns>完整性校验文件路径</returns>
+        /// <param name="configFilePath">Config file path</param>
+        /// <returns>Integrity check file path</returns>
         private static string GetIntegrityFilePath(string configFilePath)
         {
             return configFilePath + INTEGRITY_FILE_EXT;
         }
 
         /// <summary>
-        /// 保存配置文件的完整性校验值
+        /// Saves the integrity check value for a config file
         /// </summary>
-        /// <param name="configFilePath">配置文件路径</param>
-        /// <returns>是否保存成功</returns>
+        /// <param name="configFilePath">Config file path</param>
+        /// <returns>Whether the save was successful</returns>
         public static bool SaveConfigIntegrityHash(string configFilePath)
         {
             try
@@ -375,13 +455,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证配置文件的完整性
-        /// 通过比对文件内容的 HMAC-SHA256 校验值与之前保存的校验值来确认文件未被篡改
+        /// Verifies the integrity of a config file
+        /// Confirms the file has not been tampered with by comparing the HMAC-SHA256 checksum of the file content against a previously saved checksum
         /// </summary>
-        /// <param name="configFilePath">配置文件路径</param>
+        /// <param name="configFilePath">Config file path</param>
         /// <returns>
-        /// true: 完整性验证通过
-        /// false: 完整性验证失败或校验文件缺失（出于安全考虑）
+        /// true: Integrity verification passed
+        /// false: Integrity verification failed or checksum file is missing (for security reasons)
         /// </returns>
         public static bool VerifyConfigIntegrity(string configFilePath)
         {
@@ -390,14 +470,14 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证配置文件的完整性并读取内容（原子操作，防止TOCTOU攻击）
-        /// 在锁定状态下完成验证和读取，确保验证的内容与读取的内容一致
+        /// Verifies config file integrity and reads its content (atomic operation to prevent TOCTOU attacks)
+        /// Verification and reading are completed under a lock to ensure the verified content matches the read content
         /// </summary>
-        /// <param name="configFilePath">配置文件路径</param>
-        /// <param name="content">输出参数：验证通过后的文件内容</param>
+        /// <param name="configFilePath">Config file path</param>
+        /// <param name="content">Output parameter: file content after successful verification</param>
         /// <returns>
-        /// true: 完整性验证通过，content包含文件内容
-        /// false: 完整性验证失败或校验文件缺失（出于安全考虑）
+        /// true: Integrity verification passed, content contains the file content
+        /// false: Integrity verification failed or checksum file is missing (for security reasons)
         /// </returns>
         public static bool VerifyConfigIntegrityAndRead(string configFilePath, out string content)
         {
@@ -411,14 +491,14 @@ namespace FirewallManager
 
                 string integrityFilePath = GetIntegrityFilePath(configFilePath);
 
-                // 如果校验文件不存在，拒绝加载（防止攻击者删除校验文件绕过验证）
+                // Reject loading if the checksum file is missing (prevents attackers from deleting it to bypass verification)
                 if (!File.Exists(integrityFilePath))
                 {
                     LogManager.Error(LangManager.GetText("logMessages.configIntegrityFileMissing", configFilePath));
                     return false;
                 }
 
-                // 使用文件锁定防止TOCTOU攻击
+                // Use file locking to prevent TOCTOU attacks
                 using (var fs = File.Open(integrityFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                 {
                     using (var reader = new StreamReader(fs, Encoding.UTF8))
@@ -429,7 +509,7 @@ namespace FirewallManager
                             return false;
                         }
 
-                        // 使用文件锁定读取配置文件
+                        // Use file locking to read the config file
                         using (var configFs = File.Open(configFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                         {
                             byte[] configBytes = new byte[configFs.Length];
@@ -450,8 +530,8 @@ namespace FirewallManager
                                 return false;
                             }
 
-                            // 验证通过后才返回内容，确保没有TOCTOU窗口
-                            // 使用 StreamReader 读取内容以自动处理 BOM
+                            // Return content only after verification passes, ensuring no TOCTOU window
+                            // Use StreamReader to read content so that BOM is handled automatically
                             using (var streamReader = new StreamReader(new MemoryStream(configBytes), Encoding.UTF8, true))
                             {
                                 content = streamReader.ReadToEnd();
@@ -463,17 +543,17 @@ namespace FirewallManager
             }
             catch
             {
-                // 验证失败时出于安全考虑返回 false
+                // Return false on verification failure for security reasons
                 return false;
             }
         }
 
         /// <summary>
-        /// 为敏感配置文件设置受限ACL权限（仅管理员和SYSTEM可访问）
-        /// 防止低权限用户篡改白名单、配置等关键文件
-        /// 实际实现委托到 ComHelper.SetSecureFilePermissionsInternal，消除重复代码
+        /// Sets restricted ACL permissions for sensitive config files (only Administrators and SYSTEM can access)
+        /// Prevents low-privilege users from tampering with critical files such as the whitelist and config
+        /// Actual implementation is delegated to ComHelper.SetSecureFilePermissionsInternal to eliminate duplicate code
         /// </summary>
-        /// <param name="filePath">要保护的文件路径</param>
+        /// <param name="filePath">Path of the file to protect</param>
         public static void SetSecureFilePermissionsPublic(string filePath)
         {
             ComHelper.SetSecureFilePermissionsInternal(filePath);

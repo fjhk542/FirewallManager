@@ -15,40 +15,40 @@ namespace FirewallManager
 
 
     /// <summary>
-    /// 防火墙管理器主窗体
-    /// 负责监控指定目录中的可执行文件，并自动创建防火墙规则拦截其出站连接
+    /// Firewall Manager main form
+    /// Responsible for monitoring executable files in specified directories and automatically creating firewall rules to block their outbound connections
     /// </summary>
     public partial class Form1 : Form
     {
-        #region 类定义
+        #region Class Definitions
 
         /// <summary>
-        /// 扫描目标类
-        /// 用于表示需要监控的文件夹或单个可执行文件
+        /// Scan target class
+        /// Represents a folder or a single executable file to be monitored
         /// </summary>
-        public class ScanTarget
+        public class ScanTarget : IScanTarget
         {
             /// <summary>
-            /// 扫描目标的路径
+            /// Path of the scan target
             /// </summary>
             public string Path { get; set; }
 
             /// <summary>
-            /// 是否为单个可执行文件
-            /// True: 单个可执行文件
-            /// False: 文件夹
+            /// Whether it is a single executable file
+            /// True: a single executable file
+            /// False: a folder
             /// </summary>
             public bool IsExe { get; set; }
 
             /// <summary>
-            /// 显示名称，用于ListBox显示
+            /// Display name, used for ListBox display
             /// </summary>
             public string DisplayName => Path;
 
             /// <summary>
-            /// 构造函数
+            /// Constructor
             /// </summary>
-            /// <param name="path">扫描目标的路径</param>
+            /// <param name="path">Path of the scan target</param>
             public ScanTarget(string path)
             {
                 Path = path;
@@ -56,9 +56,9 @@ namespace FirewallManager
             }
 
             /// <summary>
-            /// 重写ToString方法，用于ListBox显示
+            /// Override ToString method, used for ListBox display
             /// </summary>
-            /// <returns>显示名称</returns>
+            /// <returns>Display name</returns>
             public override string ToString()
             {
                 return DisplayName;
@@ -67,66 +67,66 @@ namespace FirewallManager
 
         #endregion
 
-        #region 字段定义
+        #region Field Definitions
 
         /// <summary>
-        /// 防火墙服务
+        /// Firewall service
         /// </summary>
         private IFirewallService firewallService;
 
         /// <summary>
-        /// 监控目标列表
+        /// List of monitored targets
         /// </summary>
         private readonly List<ScanTarget> monitoredTargets = new List<ScanTarget>();
 
         /// <summary>
-        /// 待应用的自动监控设置（从配置文件加载，UI 初始化完成后应用）
+        /// Pending auto-monitor setting to be applied (loaded from config file, applied after UI initialization completes)
         /// </summary>
         private bool? pendingAutoMonitorSetting = null;
 
         /// <summary>
-        /// 当前工作状态
+        /// Current work state
         /// </summary>
         private volatile WorkState currentState = WorkState.Idle;
 
         /// <summary>
-        /// 取消令牌源
+        /// Cancellation token source
         /// </summary>
         private volatile CancellationTokenSource cancellationTokenSource;
 
         /// <summary>
-        /// 工作线程
+        /// Work task
         /// </summary>
         private volatile Task workTask;
 
         /// <summary>
-        /// 暂停事件
+        /// Pause event
         /// </summary>
         private readonly ManualResetEvent pauseEvent = new ManualResetEvent(true);
 
         /// <summary>
-        /// 日志管理器
+        /// Log manager
         /// </summary>
-        // LogManager 是静态类，不需要创建实例
+        // LogManager is a static class; no instance creation needed
 
 
 
         /// <summary>
-        /// 释放资源
-        /// 释放所有托管和非托管资源，包括取消令牌源、事件对象、防火墙服务和文件监控器
+        /// Release resources
+        /// Releases all managed and unmanaged resources, including cancellation token source, event objects, firewall service, and file watchers
         /// </summary>
         /// <summary>
-        /// 资源是否已释放
+        /// Whether resources have been released
         /// </summary>
         private volatile bool resourcesReleased = false;
 
         /// <summary>
-        /// 释放所有资源
-        /// 包括防火墙服务、文件监控器、事件对象等
+        /// Release all resources
+        /// Including firewall service, file watchers, event objects, etc.
         /// </summary>
         private void ReleaseResources()
         {
-            // 使用双重检查锁定确保线程安全且只释放一次
+            // Use double-check locking to ensure thread-safety and only release once
             if (resourcesReleased)
             {
                 return;
@@ -141,12 +141,12 @@ namespace FirewallManager
 
                 try
                 {
-                    // 安全释放 CancellationTokenSource
+                    // Safely release CancellationTokenSource
                     if (cancellationTokenSource != null)
                     {
                         try
                         {
-                            // 先取消，确保所有使用该令牌的任务都能收到取消信号
+                            // Cancel first to ensure all tasks using this token receive the cancellation signal
                             if (!cancellationTokenSource.IsCancellationRequested)
                             {
                                 cancellationTokenSource.Cancel();
@@ -163,20 +163,20 @@ namespace FirewallManager
                         }
                     }
                     
-                    // 释放手动重置事件
+                    // Release the manual reset event
                     pauseEvent?.Dispose();
                     
-                    // 释放防火墙服务
+                    // Release the firewall service
                     firewallService?.Dispose();
                     
-                    // 释放文件监控器
+                    // Release file watchers
                     foreach (var watcher in watchers)
                     {
                         watcher.Dispose();
                     }
                     watchers.Clear();
                     
-                    // 释放白名单静态资源
+                    // Release whitelist static resources
                     WhitelistForm.ReleaseStaticResources();
                     
                     LogManager.Info(LangManager.GetText("logMessages.resourcesReleased"));
@@ -191,14 +191,14 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 重写 Dispose 方法，确保资源正确释放
+        /// Override Dispose method to ensure proper resource release
         /// </summary>
-        /// <param name="disposing">是否释放托管资源</param>
+        /// <param name="disposing">Whether to release managed resources</param>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                // 释放托管资源
+                // Release managed resources
                 ReleaseResources();
             }
             base.Dispose(disposing);
@@ -207,11 +207,11 @@ namespace FirewallManager
         
 
         /// <summary>
-        /// 规范化和验证路径
+        /// Normalize and validate path
         /// </summary>
-        /// <param name="path">输入路径</param>
-        /// <param name="isDirectory">是否为目录</param>
-        /// <returns>规范化后的路径，如果路径无效则返回 null</returns>
+        /// <param name="path">Input path</param>
+        /// <param name="isDirectory">Whether it is a directory</param>
+        /// <returns>Normalized path, or null if the path is invalid</returns>
         private string NormalizeAndValidatePath(string path, bool isDirectory)
         {
             try
@@ -224,8 +224,18 @@ namespace FirewallManager
 
                 LogManager.Info($"Validating path: '{path}', isDirectory={isDirectory}");
 
-                // 去除路径中的特殊前缀（如 \\?\），防止绕过路径验证
-                string sanitizedPath = path;
+                // Reject network (UNC) and device paths before any filesystem call. Directory.Exists on
+                // a UNC path transmits the current user's NTLM credentials to the remote host, and the
+                // resulting rules would target a UNC path that the firewall cannot match.
+                string candidatePath = path.Trim();
+                if (!ComHelper.IsLocalPathCandidate(candidatePath))
+                {
+                    LogManager.Warning($"Path validation failed: network or device path rejected '{path}'");
+                    return null;
+                }
+
+                // Strip special prefixes (e.g., \\?\) to prevent bypassing path validation
+                string sanitizedPath = candidatePath;
                 if (sanitizedPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
                 {
                     sanitizedPath = sanitizedPath.Substring(4);
@@ -239,11 +249,19 @@ namespace FirewallManager
                     sanitizedPath = @"\\" + sanitizedPath.Substring(8);
                 }
 
-                // 获取规范化路径
+                // Get the normalized path
                 string realPath = Path.GetFullPath(sanitizedPath);
                 LogManager.Info($"Normalized path: '{realPath}'");
 
-                // 检查路径是否存在
+                // A relative path resolved against a UNC working directory only becomes UNC after
+                // GetFullPath, so the network/device check has to be repeated on the result.
+                if (!ComHelper.IsLocalPathCandidate(realPath))
+                {
+                    LogManager.Warning($"Path validation failed: network or device path rejected '{realPath}'");
+                    return null;
+                }
+
+                // Check whether the path exists
                 if (isDirectory && !Directory.Exists(realPath))
                 {
                     LogManager.Warning($"Path validation failed: directory does not exist '{realPath}'");
@@ -255,7 +273,7 @@ namespace FirewallManager
                     return null;
                 }
 
-                // 检查是否为系统根目录（如 C:\），避免扫描整个系统
+                // Check if it is a system root directory (e.g., C:\) to avoid scanning the entire system
                 string rootPath = Path.GetPathRoot(realPath);
                 if (!string.IsNullOrEmpty(rootPath) && realPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
                 {
@@ -263,10 +281,19 @@ namespace FirewallManager
                     return null;
                 }
 
-                // 验证路径根目录是本地驱动器
+                // Verify that the path root is a local drive
                 if (!Path.IsPathRooted(realPath))
                 {
                     LogManager.Warning($"Path validation failed: not rooted '{realPath}'");
+                    return null;
+                }
+
+                // A junction or symlink used as a monitored target would silently redirect scans and
+                // watchers to an unrelated tree: EnumerationOptions filters children, not the root,
+                // and FileSystemWatcher follows reparse points on its own.
+                if (ComHelper.HasReparsePointInPath(realPath))
+                {
+                    LogManager.Warning($"Path validation failed: reparse point in path '{realPath}'");
                     return null;
                 }
 
@@ -281,12 +308,12 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 尝试将已规范化的路径添加到监控列表（去重）
-        /// 仅负责核心添加逻辑（去重检查 + 添加到 monitoredTargets 和 folderListBox）
-        /// 副作用（SaveMonitoredTargets、CreateFileWatcher、计数、UI反馈）由调用方处理
+        /// Attempt to add a normalized path to the monitoring list (deduplication)
+        /// Only responsible for the core add logic (deduplication check + add to monitoredTargets and folderListBox)
+        /// Side effects (SaveMonitoredTargets, CreateFileWatcher, counters, UI feedback) are handled by the caller
         /// </summary>
-        /// <param name="normalizedPath">已规范化的路径</param>
-        /// <returns>新创建的 ScanTarget；若路径无效或已存在则返回 null</returns>
+        /// <param name="normalizedPath">Normalized path</param>
+        /// <returns>The newly created ScanTarget; null if the path is invalid or already exists</returns>
         private ScanTarget TryAddPathToMonitoring(string normalizedPath)
         {
             if (string.IsNullOrEmpty(normalizedPath))
@@ -304,19 +331,19 @@ namespace FirewallManager
         private List<System.IO.FileSystemWatcher> watchers = new List<System.IO.FileSystemWatcher>();
         #endregion
 
-        #region 构造函数
+        #region Constructors
 
         /// <summary>
-        /// 默认构造函数（供设计器使用）
+        /// Default constructor (for designer use)
         /// </summary>
         public Form1() : this(new FirewallService())
         {
         }
 
         /// <summary>
-        /// 带依赖注入的构造函数
+        /// Constructor with dependency injection
         /// </summary>
-        /// <param name="firewallService">防火墙服务</param>
+        /// <param name="firewallService">Firewall service</param>
         public Form1(IFirewallService firewallService)
         {
             this.firewallService = firewallService ?? throw new ArgumentNullException(nameof(firewallService));
@@ -325,7 +352,7 @@ namespace FirewallManager
             {
                 InitializeComponent();
 
-                // 绑定查看规则详情的事件
+                // Bind the event for viewing rule details
                 folderListBox.DoubleClick += folderListBox_DoubleClick;
                 var viewRuleDetailsMenuItem = new ToolStripMenuItem(
                     LangManager.GetText("menu.viewRuleDetails"),
@@ -334,90 +361,93 @@ namespace FirewallManager
                 contextMenuStrip.Items.Add(new ToolStripSeparator());
                 contextMenuStrip.Items.Add(viewRuleDetailsMenuItem);
 
-                // 检查语言资源是否已加载，如果没有加载则尝试重新加载
+                // Check whether language resources have been loaded; if not, try reloading
                 if (!LangManager.IsLanguageLoaded())
                 {
                     LangManager.ReloadLanguageFiles();
                 }
                 
-                // 设置UI控件文本
+                // Set UI control text
                 SetUIControlsText();
                 
-                // 记录程序启动
+                // Log program startup
                 LogManager.Info(LangManager.GetText("logMessages.startup"));
 
-                // 检查管理员权限
+                // Check administrator privileges
                 if (!IsRunningAsAdministrator())
                 {
                     HandleNotAdmin();
                     return;
                 }
 
-                // 初始化权限拆分架构
+                // Initialize the privilege separation architecture
                 InitializePermissionArchitecture();
 
-                // 确保托盘图标在InitializeComponent后就显示
+                // Ensure tray icon is displayed right after InitializeComponent
                 InitializeTrayIcon();
                 
-                // 初始化防火墙组件（包括加载监控目标）
+                // Initialize firewall components (including loading monitored targets)
                 InitializeFirewallComponents();
+                
+                // Ensure all controls are laid out correctly
+                this.PerformLayout();
             }
             catch (Exception ex)
             {
-                // 捕获所有未处理的异常
+                // Catch all unhandled exceptions
                 HandleStartupError(ex);
             }
         }
 
         #endregion
 
-        #region 初始化方法
+        #region Initialization Methods
 
         /// <summary>
-        /// 初始化权限拆分架构
-        /// 设计用于分离管理员权限和普通用户权限
+        /// Initialize the privilege separation architecture
+        /// Designed to separate administrator privileges from normal user privileges
         /// </summary>
         private void InitializePermissionArchitecture()
         {
-            // 记录权限状态
+            // Log the privilege status
             bool isAdmin = IsRunningAsAdministrator();
             LogManager.Info(LangManager.GetText("logMessages.permissionStatus", isAdmin ? LangManager.GetText("messages.admin") : LangManager.GetText("messages.user")));
             
-            // 根据权限级别配置功能
+            // Configure functionality based on privilege level
             if (isAdmin)
             {
-                // 管理员权限：启用所有防火墙管理功能
+                // Administrator privileges: enable all firewall management features
                 LogManager.Info(LangManager.GetText("logMessages.adminModeEnabled"));
 
-                // 启用所有管理功能按钮（这些按钮在 InitializeFirewallComponents 中会根据防火墙初始化状态再次设置）
+                // Enable all management feature buttons (these will be set again in InitializeFirewallComponents based on firewall initialization status)
                 SafeInvoke(() => SetManagementButtonsEnabled(true));
             }
             else
             {
-                // 普通用户权限：禁用需要管理员权限的功能
+                // Normal user privileges: disable features that require administrator privileges
                 LogManager.Warning(LangManager.GetText("logMessages.userModeLimited"));
 
-                // 禁用需要管理员权限的功能
+                // Disable features that require administrator privileges
                 SafeInvoke(() =>
                 {
                     SetManagementButtonsEnabled(false);
 
-                    // 更新状态标签
+                    // Update the status label
                     statusLabel.Text = LangManager.GetText("status.adminRequired");
                 });
             }
         }
 
         /// <summary>
-        /// 初始化托盘图标
+        /// Initialize tray icon
         /// </summary>
         private void InitializeTrayIcon()
         {
             try
             {
-                // 在构造函数中，我们已经在UI线程上，直接初始化托盘图标
-                // 无需使用SafeInvoke，因为InvokeRequired会返回false
-                trayIcon.Icon = this.Icon; // 使用应用程序图标作为托盘图标
+                // In the constructor we are already on the UI thread, so initialize the tray icon directly
+                // No need to use SafeInvoke because InvokeRequired will return false
+                trayIcon.Icon = this.Icon; // Use the application icon as the tray icon
                 trayIcon.Text = LangManager.GetText("app.trayText");
                 trayIcon.Visible = true;
                 LogManager.Info(LangManager.GetText("logMessages.trayInitialized"));
@@ -430,16 +460,16 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 初始化防火墙组件
+        /// Initialize firewall components
         /// </summary>
         private void InitializeFirewallComponents()
         {
             try
             {
-                // 先加载监控目标（无论防火墙是否初始化成功都需要加载）
+                // Load monitored targets first (needed regardless of whether firewall initialization succeeds)
                 LoadMonitoredTargets();
                 
-                // 初始化防火墙组件（firewallService已通过构造函数注入）
+                // Initialize firewall components (firewallService has been injected via the constructor)
                 bool initialized = firewallService.InitializeFirewallComponents();
                 
                 if (initialized)
@@ -461,7 +491,7 @@ namespace FirewallManager
                 LogManager.Error(LangManager.GetText("logMessages.stackTrace", ex.StackTrace));
                 MessageBox.Show(LangManager.GetText("messages.initializeFirewallFailed"), LangManager.GetText("messages.initializeFirewallFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                 
-                // 禁用所有与防火墙相关的功能按钮
+                // Disable all firewall-related function buttons
                 SafeInvoke(() =>
                 {
                     SetManagementButtonsEnabled(false);
@@ -469,14 +499,14 @@ namespace FirewallManager
                 });
             }
 
-            // 应用从配置文件恢复的自动监控设置（UI 初始化完成后）
+            // Apply the auto-monitor setting restored from the config file (after UI initialization completes)
             if (pendingAutoMonitorSetting.HasValue)
             {
                 bool autoMonitor = pendingAutoMonitorSetting.Value;
                 pendingAutoMonitorSetting = null;
                 if (autoMonitor && autoMonitorCheckBox.Checked != autoMonitor)
                 {
-                    // 通过设置 Checked 触发事件，不直接调用逻辑
+                    // Trigger the event by setting Checked instead of calling the logic directly
                     autoMonitorCheckBox.Checked = true;
                 }
                 else
@@ -487,16 +517,16 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 初始化文件系统监控器
+        /// Initialize file system watchers
         /// </summary>
         private void InitializeFileWatchers()
         {
             try
             {
-                // 停止现有的监控器
+                // Stop existing watchers
                 StopFileWatchers();
                 
-                // 为每个监控目标创建监控器
+                // Create a watcher for each monitored target
                 foreach (var target in monitoredTargets)
                 {
                     if (!target.IsExe && Directory.Exists(target.Path))
@@ -514,9 +544,9 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 创建文件系统监控器
+        /// Create a file system watcher
         /// </summary>
-        /// <param name="path">监控路径</param>
+        /// <param name="path">Path to monitor</param>
         private void CreateFileWatcher(string path)
         {
             try
@@ -526,12 +556,12 @@ namespace FirewallManager
                 watcher.Filter = "*.exe";
                 watcher.IncludeSubdirectories = true;
                 
-                // 订阅事件
+                // Subscribe to events
                 watcher.Created += FileSystemWatcher_Created;
                 watcher.Renamed += FileSystemWatcher_Renamed;
                 watcher.Changed += FileSystemWatcher_Changed;
                 
-                // 启动监控
+                // Start monitoring
                 watcher.EnableRaisingEvents = true;
                 
                 watchers.Add(watcher);
@@ -544,7 +574,7 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 停止文件系统监控器
+        /// Stop file system watchers
         /// </summary>
         private void StopFileWatchers()
         {
@@ -564,11 +594,11 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 文件创建事件处理
-        /// 使用重试机制确保文件已完全写入后再处理，防止 TOCTOU 竞态条件
+        /// File created event handler
+        /// Uses a retry mechanism to ensure the file is fully written before processing, preventing TOCTOU race conditions
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void FileSystemWatcher_Created(object sender, System.IO.FileSystemEventArgs e)
         {
             try
@@ -583,11 +613,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 文件重命名事件处理
         /// File renamed event handler
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void FileSystemWatcher_Renamed(object sender, System.IO.RenamedEventArgs e)
         {
             try
@@ -602,11 +631,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 文件修改事件处理
-        /// 当文件被修改时重新验证并更新规则
+        /// File changed event handler
+        /// Re-validate and update rules when a file is modified
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void FileSystemWatcher_Changed(object sender, System.IO.FileSystemEventArgs e)
         {
             try
@@ -621,36 +650,44 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 统一的 EXE 文件验证与规则创建逻辑
-        /// 提取自 FileSystemWatcher_Created/Renamed/Changed 三个事件处理程序，消除重复代码
-        /// 验证流程：扩展名 → 等待文件就绪 → 真实路径 → reparse point → 信任检查 → 创建规则
+        /// Unified EXE file validation and rule creation logic
+        /// Extracted from FileSystemWatcher_Created/Renamed/Changed event handlers to eliminate duplicate code
+        /// Validation flow: extension -> wait for file ready -> real path -> reparse point -> trust check -> create rule
         /// </summary>
-        /// <param name="rawPath">原始文件路径</param>
-        /// <param name="waitForReady">是否等待文件写入完成（Created/Changed 事件需要，Renamed 事件不需要）</param>
+        /// <param name="rawPath">Raw file path</param>
+        /// <param name="waitForReady">Whether to wait for file write to complete (required for Created/Changed events, not needed for Renamed)</param>
         private void ValidateAndCreateRuleForExe(string rawPath, bool waitForReady)
         {
-            // 显式验证 .exe 扩展名，防止 Filter 在某些 Windows 版本上匹配短文件名
+            // Explicitly verify .exe extension to prevent Filter from matching short file names on some Windows versions
             string fileName = Path.GetFileName(rawPath);
             if (!fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
 
-            // 使用重试机制等待文件写入完成（防止 TOCTOU）
+            // Use retry mechanism to wait for file write to complete (prevent TOCTOU)
             if (waitForReady && !ComHelper.WaitForFileReady(rawPath, maxRetries: 10, retryDelayMs: 500))
             {
                 LogManager.Warning(LangManager.GetText("logMessages.fileNotReadyAfterRetries", rawPath));
                 return;
             }
 
-            // 在创建规则前再次验证文件是否存在且未被替换（防止 TOCTOU）
+            // Re-verify file exists and has not been replaced before creating rule (prevent TOCTOU)
             if (!File.Exists(rawPath))
             {
                 LogManager.Warning(LangManager.GetText("logMessages.fileDisappearedBeforeProcessing", rawPath));
                 return;
             }
 
-            // 使用 GetRealPath 获取真实路径（解析符号链接和挂载点）
+            // Check the ORIGINAL path for reparse points before resolving it. GetRealPath replaces the
+            // link with its target, so checking afterwards can never detect the link itself.
+            if (ComHelper.HasReparsePointInPath(rawPath))
+            {
+                LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", rawPath));
+                return;
+            }
+
+            // Use GetRealPath to obtain real path (resolve symbolic links and mount points)
             string fullPath = ComHelper.GetRealPath(rawPath);
             if (fullPath == null)
             {
@@ -658,41 +695,34 @@ namespace FirewallManager
                 return;
             }
 
-            // 检查路径链是否包含任何 reparse point（含父级目录检测，防止符号链接绕过）
-            if (ComHelper.HasReparsePointInPath(fullPath))
+            // Skip only Windows' own executables; blocking them would destabilize the system.
+            // Unsigned binaries must NOT be skipped: containing them is the whole point of this tool.
+            if (ComHelper.IsCriticalSystemExecutable(fullPath))
             {
-                LogManager.Warning(LangManager.GetText("logMessages.rejectSymbolicLinkFile", fullPath));
+                LogManager.Warning($"Skipping critical system executable: {fullPath}");
                 return;
             }
 
-            // 验证调用者进程身份，防止恶意进程注入调用
-            if (!ComHelper.IsFilePathTrusted(fullPath))
-            {
-                LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", fullPath));
-                return;
-            }
-
-            // 为新创建的EXE文件创建防火墙规则
+            // Create firewall rule for newly created EXE file
             firewallService.CreateRuleForExe(fullPath);
         }
         
         #endregion
 
-        #region UI相关方法
+        #region UI-related methods
 
         /// <summary>
-        /// 安全地重新创建 CancellationTokenSource
         /// Safely recreate CancellationTokenSource
         /// </summary>
-        /// <returns>新创建的 CancellationTokenSource</returns>
+        /// <returns>Newly created CancellationTokenSource</returns>
         private CancellationTokenSource SafeRecreateCancellationTokenSource()
         {
-            // 安全释放旧的 CancellationTokenSource
+            // Safely dispose the old CancellationTokenSource
             if (cancellationTokenSource != null)
             {
                 try
                 {
-                    // 先取消，确保所有使用该令牌的任务都能收到取消信号
+                    // Cancel first to ensure all tasks using this token receive the cancellation signal
                     if (!cancellationTokenSource.IsCancellationRequested)
                     {
                         cancellationTokenSource.Cancel();
@@ -709,21 +739,20 @@ namespace FirewallManager
                 }
             }
             
-            // 创建新的 CancellationTokenSource
+            // Create a new CancellationTokenSource
             cancellationTokenSource = new CancellationTokenSource();
             return cancellationTokenSource;
         }
 
         /// <summary>
-        /// 设置UI控件文本
         /// Set UI control text
         /// </summary>
         private void SetUIControlsText()
         {
-            // 设置窗口标题
+            // Set window title
             this.Text = LangManager.GetText("app.title");
 
-            // 设置按钮文本
+            // Set button text
             addButton.Text = LangManager.GetText("buttons.add");
             updateRulesButton.Text = LangManager.GetText("buttons.updateRules");
             clearRulesButton.Text = LangManager.GetText("buttons.clearRules");
@@ -736,41 +765,38 @@ namespace FirewallManager
             exportConfigButton.Text = LangManager.GetText("buttons.exportConfig");
             importConfigButton.Text = LangManager.GetText("buttons.importConfig");
 
-            // 设置上下文菜单项文本
+            // Set context menu item text
             pasteMenuItem.Text = LangManager.GetText("menu.paste");
             addFolderToolStripMenuItem.Text = LangManager.GetText("menu.addFolder");
             addExeToolStripMenuItem.Text = LangManager.GetText("menu.addFile");
 
-            // 设置托盘菜单项文本
+            // Set tray menu item text
             showMainFormToolStripMenuItem.Text = LangManager.GetText("menu.showMainForm");
             updateRulesTrayToolStripMenuItem.Text = LangManager.GetText("menu.updateRules");
             exitToolStripMenuItem.Text = LangManager.GetText("menu.exit");
 
-            // 设置自动监控复选框文本
+            // Set auto-monitor checkbox text
             autoMonitorCheckBox.Text = LangManager.GetText("menu.autoMonitor");
 
-            // 设置语言下拉框
+            // Set language combo box
             if (languageComboBox.Items.Count == 0)
             {
                 languageComboBox.Items.Add(LangManager.GetText("language.chinese"));
                 languageComboBox.Items.Add(LangManager.GetText("language.english"));
             }
-            // 设置当前语言为选中项
+            // Set current language as selected item
             string currentLang = LangManager.GetCurrentLanguage();
             languageComboBox.SelectedIndex = currentLang == "zh" ? 0 : 1;
 
-            // 设置文件对话框文本
+            // Set file dialog text
             openFileDialog.Title = LangManager.GetText("messages.selectExeFile");
             openFileDialog.Filter = LangManager.GetText("messages.exeFileFilter");
         }
 
         /// <summary>
-        /// 线程安全的UI更新方法
         /// Thread-safe UI update method
-        /// 检查是否需要跨线程调用，确保UI操作在主线程上执行
-        /// Check if cross-thread invoke is needed and ensure UI operations are executed on main thread
+        /// Checks whether cross-thread invoke is needed and ensures UI operations are executed on the main thread
         /// </summary>
-        /// <param name="action">要在UI线程上执行的操作</param>
         /// <param name="action">Action to be executed on UI thread</param>
         private void SafeInvoke(Action action)
         {
@@ -785,11 +811,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 统一设置管理功能按钮的启用/禁用状态
-        /// 抽取自 InitializePermissionArchitecture 与 InitializeFirewallComponents，消除3处重复
-        /// 运行控制按钮（pause/resume/stop）始终置为 false，由 UpdateUI 根据工作状态单独控制
+        /// Uniformly set the enabled/disabled state of management function buttons
+        /// Extracted from InitializePermissionArchitecture and InitializeFirewallComponents to eliminate 3 duplicates
+        /// Runtime control buttons (pause/resume/stop) are always set to false, controlled individually by UpdateUI based on work state
         /// </summary>
-        /// <param name="enabled">是否启用管理按钮</param>
+        /// <param name="enabled">Whether management buttons are enabled</param>
         private void SetManagementButtonsEnabled(bool enabled)
         {
             addButton.Enabled = enabled;
@@ -805,11 +831,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 更新UI状态
         /// Update UI state
         /// </summary>
-        /// <param name="state">工作状态</param>
-        /// <param name="statusText">状态文本</param>
+        /// <param name="state">Work state</param>
+        /// <param name="statusText">Status text</param>
         private void UpdateUI(WorkState state, string statusText)
         {
             SafeInvoke(() =>
@@ -817,13 +842,13 @@ namespace FirewallManager
                 currentState = state;
                 statusLabel.Text = statusText;
                 
-                // 根据状态启用/禁用按钮
+                // Enable/disable buttons based on state
                 bool isIdle = (state == WorkState.Idle);
                 bool isRunning = (state == WorkState.Running);
                 bool isPaused = (state == WorkState.Paused);
                 bool isStopping = (state == WorkState.Stopping);
                 
-                // 主要操作按钮
+                // Primary operation buttons
                 addButton.Enabled = isIdle;
                 updateRulesButton.Enabled = isIdle;
                 clearRulesButton.Enabled = isIdle;
@@ -832,12 +857,12 @@ namespace FirewallManager
                 exportConfigButton.Enabled = isIdle;
                 importConfigButton.Enabled = isIdle;
                 
-                // 运行控制按钮
+                // Runtime control buttons
                 pauseButton.Enabled = isRunning;
                 resumeButton.Enabled = isPaused;
                 stopButton.Enabled = isRunning || isPaused;
                 
-                // 更新进度条可见性
+                // Update progress bar visibility
                 progressBar.Style = isRunning ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
                 progressBar.MarqueeAnimationSpeed = isRunning ? 30 : 0;
             });
@@ -845,16 +870,13 @@ namespace FirewallManager
 
         #endregion
 
-        #region 权限相关方法
+        #region Permission-related methods
 
         /// <summary>
-        /// 检查是否以管理员身份运行
         /// Check if running as administrator
-        /// 通过检查当前用户是否属于管理员角色来判断
-        /// Determine by checking if current user is in administrator role
+        /// Determined by checking if the current user belongs to the administrator role
         /// </summary>
-        /// <returns>是否以管理员身份运行</returns>
-        /// <returns>true if running as administrator; false otherwise</returns>
+        /// <returns>Whether running as administrator</returns>
         private bool IsRunningAsAdministrator()
         {
             WindowsIdentity identity = WindowsIdentity.GetCurrent();
@@ -863,10 +885,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 处理非管理员权限情况
         /// Handle non-admin permission case
-        /// 记录错误日志并提示用户需要以管理员身份运行，然后退出应用程序
-        /// Log error and prompt user that administrator privileges are required, then exit application
+        /// Logs error and prompts user that administrator privileges are required, then exits the application
         /// </summary>
         private void HandleNotAdmin()
         {
@@ -877,10 +897,9 @@ namespace FirewallManager
 
         #endregion
 
-        #region 防火墙相关方法
+        #region Firewall-related methods
 
         /// <summary>
-        /// 加载监控文件夹
         /// Load monitored folders and sync firewall rules
         /// </summary>
         private void LoadMonitoredFolders()
@@ -889,17 +908,17 @@ namespace FirewallManager
             {
                 LogManager.Info(LangManager.GetText("logMessages.loadingMonitoredFolders"));
                 
-                // 同步防火墙规则列表（从实际防火墙中加载已有规则）
+                // Sync firewall rules list (load existing rules from actual firewall)
                 firewallService.SyncRulesList();
                 
-                // 获取规则数量
+                // Get rule count
                 var ruleNames = firewallService.GetAllRuleNames();
                 LogManager.Info(LangManager.GetText("logMessages.loadedFirewallRules", ruleNames.Count));
             }
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.loadingFoldersFailed", ex.Message), ex);
-                // 向用户反馈错误
+                // Report error to user
                 this.Invoke((MethodInvoker)delegate
                 {
                     MessageBox.Show(LangManager.GetText("logMessages.loadingFoldersFailed", ex.Message), LangManager.GetText("messages.pathErrorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -908,9 +927,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 保存监控目标到配置文件
         /// Save monitored targets to config file
-        /// 使用 TargetStore v2 schema，持久化 language 和 autoMonitor
+        /// Uses TargetStore v2 schema, persists language and autoMonitor
         /// </summary>
         private void SaveMonitoredTargets()
         {
@@ -918,7 +936,7 @@ namespace FirewallManager
             {
                 string configPath = Config.GetAppDataFilePath(Config.CONFIG_FILE);
 
-                // 收集当前状态
+                // Collect current state
                 var data = new TargetStore.ConfigData
                 {
                     Language = LangManager.GetCurrentLanguage(),
@@ -928,7 +946,7 @@ namespace FirewallManager
 
                 if (!TargetStore.Save(configPath, data))
                 {
-                    // 保存失败时提示用户
+                    // Prompt user when save fails
                     MessageBox.Show(
                         LangManager.GetText("messages.saveMonitoringTargetsFailed", "Save failed"),
                         LangManager.GetText("messages.errorTitle"),
@@ -944,9 +962,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 加载监控目标从配置文件
         /// Load monitored targets from config file
-        /// 使用 TargetStore v2 schema，恢复 language 和 autoMonitor
+        /// Uses TargetStore v2 schema, restores language and autoMonitor
         /// </summary>
         private void LoadMonitoredTargets()
         {
@@ -961,11 +978,11 @@ namespace FirewallManager
                     return;
                 }
 
-                // 使用 TargetStore 加载（含完整性校验、降级回退和 v1 自动迁移）
+                // Load using TargetStore (includes integrity validation, graceful degradation, and automatic v1 migration)
                 var data = TargetStore.Load(configPath);
                 if (data == null)
                 {
-                    // 配置文件无法读取或解析（可能已损坏）
+                    // Config file cannot be read or parsed (may be corrupted)
                     MessageBox.Show(
                         LangManager.GetText("messages.configLoadFailed"),
                         LangManager.GetText("messages.errorTitle"),
@@ -974,7 +991,7 @@ namespace FirewallManager
                     return;
                 }
 
-                // 恢复语言设置（v2 schema 才有）
+                // Restore language setting (v2 schema only)
                 if (!string.IsNullOrEmpty(data.Language))
                 {
                     string currentLang = LangManager.GetCurrentLanguage();
@@ -985,11 +1002,11 @@ namespace FirewallManager
                     }
                 }
 
-                // 恢复自动监控开关（v2 schema 才有）
-                // 注意：此处仅设置状态，不立即启动监控（避免在 UI 初始化前触发）
+                // Restore auto-monitor toggle (v2 schema only)
+                // Note: Only set the state here, do not start monitoring immediately (to avoid triggering before UI initialization)
                 pendingAutoMonitorSetting = data.AutoMonitor;
 
-                // 加载监控目标路径
+                // Load monitored target paths
                 if (data.Targets == null || data.Targets.Count == 0)
                 {
                     LogManager.Info("No targets in config file");
@@ -1007,13 +1024,12 @@ namespace FirewallManager
                         continue;
                     }
 
-                    // 使用 NormalizeAndValidatePath 验证每个路径
-                    // 防止配置文件中包含符号链接、Junction、扩展长度路径等绕过攻击
-                    bool isDir = Directory.Exists(path);
-                    bool isExeFile = !isDir && File.Exists(path) &&
-                                     path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-
-                    string normalizedPath = NormalizeAndValidatePath(path, isDir || isExeFile);
+                    // Validate each path using NormalizeAndValidatePath
+                    // Prevent bypass attacks such as symlinks, junctions, UNC paths and
+                    // extended-length paths in config file. Validation runs before any existence
+                    // check, because Directory.Exists on a UNC path contacts the remote host.
+                    string normalizedPath = NormalizeAndValidatePath(path, true) ??
+                                            NormalizeAndValidatePath(path, false);
                     if (normalizedPath == null)
                     {
                         LogManager.Warning($"Path failed validation, skipping: {path}");
@@ -1021,26 +1037,14 @@ namespace FirewallManager
                         continue;
                     }
 
-                    bool exists = Directory.Exists(normalizedPath) ||
-                                  (File.Exists(normalizedPath) &&
-                                   normalizedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
-
-                    if (exists)
+                    if (TryAddPathToMonitoring(normalizedPath) != null)
                     {
-                        if (TryAddPathToMonitoring(normalizedPath) != null)
-                        {
-                            addedCount++;
-                        }
-                        else
-                        {
-                            skippedCount++;
-                            LogManager.Warning($"Path already added, skipping: {normalizedPath}");
-                        }
+                        addedCount++;
                     }
                     else
                     {
                         skippedCount++;
-                        LogManager.Warning($"Path no longer exists, skipping: {normalizedPath}");
+                        LogManager.Warning($"Path already added, skipping: {normalizedPath}");
                     }
                 }
                 LogManager.Info(LangManager.GetText("logMessages.loadedMonitorTargetsFromConfig", addedCount, skippedCount));
@@ -1058,10 +1062,9 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 查看规则详情
         /// View rule details
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
+        /// <param name="ruleName">Rule name</param>
         private void ViewRuleDetails(string ruleName)
         {
             try
@@ -1089,7 +1092,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 文件夹列表双击事件 - 查看选中目标的规则详情
+        /// Folder list double-click event - view rule details of selected target
         /// </summary>
         private void folderListBox_DoubleClick(object sender, EventArgs e)
         {
@@ -1112,7 +1115,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 右键菜单打开事件 - 在右键菜单显示前选中点击的列表项
+        /// Context menu opening event - select the clicked list item before the context menu is displayed
         /// </summary>
         private void contextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
@@ -1129,7 +1132,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 右键菜单查看规则详情菜单项点击事件
+        /// Context menu "view rule details" item click event
         /// </summary>
         private void viewRuleDetailsMenuItem_Click(object sender, EventArgs e)
         {
@@ -1149,13 +1152,12 @@ namespace FirewallManager
 
         #endregion
 
-        #region 错误处理
+        #region Error Handling
 
         /// <summary>
-        /// 处理启动错误
         /// Handle startup error
         /// </summary>
-        /// <param name="ex">异常对象</param>
+        /// <param name="ex">Exception object</param>
         private void HandleStartupError(Exception ex)
         {
             LogManager.Error(LangManager.GetText("logMessages.startupFailed"), ex);
@@ -1165,28 +1167,28 @@ namespace FirewallManager
 
         #endregion
 
-        #region 事件处理
+        #region Event Handling
 
         /// <summary>
-        /// 添加按钮点击事件
+        /// Add button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void addButton_Click(object sender, EventArgs e)
         {
             addContextMenu.Show(addButton, new System.Drawing.Point(0, addButton.Height));
         }
         
         /// <summary>
-        /// 添加文件夹菜单项点击事件
+        /// Add folder menu item click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void addFolderToolStripMenuItem_Click(object sender, EventArgs e)
         {
             try
             {
-                // 使用 FolderBrowserDialog 选择文件夹
+                // Use FolderBrowserDialog to select folder
                 using (var folderDialog = new FolderBrowserDialog())
                 {
                     folderDialog.Description = LangManager.GetText("buttons.addFolder");
@@ -1199,7 +1201,7 @@ namespace FirewallManager
                         string selectedPath = folderDialog.SelectedPath;
                         LogManager.Info($"Selected folder: '{selectedPath}'");
                         
-                        // 规范化和验证路径
+                        // Normalize and validate path
                         string normalizedPath = NormalizeAndValidatePath(selectedPath, true);
                         if (normalizedPath == null)
                         {
@@ -1240,7 +1242,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 更新规则按钮点击事件
+        /// Update rules button click event
         /// </summary>
         private void updateRulesButton_Click(object sender, EventArgs e)
         {
@@ -1248,24 +1250,24 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 清空规则按钮点击事件
+        /// Clear rules button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void clearRulesButton_Click(object sender, EventArgs e)
         {
-            // 清空所有防火墙规则
+            // Clear all firewall rules
             try
             {
                 LogManager.Info(LangManager.GetText("logMessages.clearingAllRules"));
                 
-                // 确认操作
+                // Confirm operation
                 if (MessageBox.Show(LangManager.GetText("messages.clearRulesConfirm"), LangManager.GetText("messages.clearRulesConfirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 {
                     return;
                 }
                 
-                // 使用防火墙服务清空规则
+                // Use firewall service to clear rules
                 int deletedCount = firewallService.ClearAllRules();
                 
                 LogManager.Info(LangManager.GetText("logMessages.clearingRulesCompleted", deletedCount));
@@ -1279,19 +1281,19 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 移除文件夹按钮点击事件
+        /// Remove folder button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void removeFolderButton_Click(object sender, EventArgs e)
         {
             if (folderListBox.SelectedItem is ScanTarget selectedTarget)
             {
                 monitoredTargets.Remove(selectedTarget);
                 folderListBox.Items.Remove(selectedTarget);
-                SaveMonitoredTargets(); // 保存监控目标
+                SaveMonitoredTargets(); // Save monitored targets
 
-                // 移除该文件夹对应的防火墙规则
+                // Remove firewall rules corresponding to this folder
                 try
                 {
                     if (!selectedTarget.IsExe)
@@ -1314,7 +1316,7 @@ namespace FirewallManager
                     LogManager.Error(LangManager.GetText("logMessages.removeFolderRulesFailed", selectedTarget.Path), ex);
                 }
 
-                // 如果自动监控已启用，重新初始化文件系统监控器
+                // Reinitialize file system watchers if auto-monitor is enabled
                 if (autoMonitorCheckBox.Checked)
                 {
                     InitializeFileWatchers();
@@ -1323,13 +1325,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 查看日志按钮点击事件
+        /// View logs button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void viewLogsButton_Click(object sender, EventArgs e)
         {
-            // 打开日志窗口
+            // Open logs window
             try
             {
                 var logsForm = new LogsForm();
@@ -1343,13 +1345,13 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 白名单管理按钮点击事件
+        /// Whitelist management button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void whitelistButton_Click(object sender, EventArgs e)
         {
-            // 打开白名单管理窗口
+            // Open whitelist management window
             try
             {
                 var whitelistForm = new WhitelistForm();
@@ -1364,7 +1366,7 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 白名单保存事件处理
+        /// Whitelist saved event handler
         /// </summary>
         private void WhitelistForm_WhitelistSaved(object sender, EventArgs e)
         {
@@ -1372,25 +1374,24 @@ namespace FirewallManager
         }
         
         /// <summary>
-        /// 自动监控复选框点击事件
         /// Auto monitor checkbox click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void autoMonitorCheckBox_CheckedChanged(object sender, EventArgs e)
         {
             try
             {
                 if (autoMonitorCheckBox.Checked)
                 {
-                    // 启用自动监控
+                    // Enable auto-monitor
                     InitializeFileWatchers();
                     LogManager.Info(LangManager.GetText("logMessages.autoMonitorEnabled"));
                     trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), LangManager.GetText("logMessages.autoMonitorEnabled"), ToolTipIcon.Info);
                 }
                 else
                 {
-                    // 禁用自动监控
+                    // Disable auto-monitor
                     StopFileWatchers();
                     LogManager.Info(LangManager.GetText("logMessages.autoMonitorDisabled"));
                     trayIcon.ShowBalloonTip(1000, LangManager.GetText("app.trayTitle"), LangManager.GetText("logMessages.autoMonitorDisabled"), ToolTipIcon.Info);
@@ -1399,17 +1400,16 @@ namespace FirewallManager
             catch (Exception ex)
             {
                 LogManager.Error(LangManager.GetText("logMessages.toggleAutoMonitorFailed"), ex);
-                autoMonitorCheckBox.Checked = false; // 恢复到未勾选状态
+                autoMonitorCheckBox.Checked = false; // Restore to unchecked state
                 MessageBox.Show(LangManager.GetText("logMessages.toggleAutoMonitorFailed") + ": " + ex.Message, LangManager.GetText("messages.errorTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         /// <summary>
-        /// 语言切换下拉框选择改变事件
         /// Language combo box selection changed event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void languageComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
             try
@@ -1419,21 +1419,21 @@ namespace FirewallManager
                 
                 if (newLanguage != currentLang)
                 {
-                    // 切换语言
+                    // Switch language
                     LangManager.SetLanguage(newLanguage);
                     
-                    // 重新设置UI文本
+                    // Reset UI text
                     SetUIControlsText();
                     
-                    // 更新托盘图标文本
+                    // Update tray icon text
                     trayIcon.Text = LangManager.GetText("app.trayText");
                     
-                    // 显示提示
+                    // Show notification
                     trayIcon.ShowBalloonTip(2000, LangManager.GetText("app.trayTitle"), LangManager.GetText("messages.languageChanged"), ToolTipIcon.Info);
                     
                     LogManager.Info($"Language changed to {newLanguage}");
 
-                    // 持久化语言设置到配置文件
+                    // Persist language setting to config file
                     SaveMonitoredTargets();
                 }
             }
@@ -1449,10 +1449,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 暂停按钮点击事件
+        /// Pause button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void pauseButton_Click(object sender, EventArgs e)
         {
             if (currentState == WorkState.Running)
@@ -1464,10 +1464,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 继续按钮点击事件
+        /// Resume button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void resumeButton_Click(object sender, EventArgs e)
         {
             if (currentState == WorkState.Paused)
@@ -1479,25 +1479,25 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 停止按钮点击事件
+        /// Stop button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private async void stopButton_Click(object sender, EventArgs e)
         {
             if (currentState == WorkState.Running || currentState == WorkState.Paused)
             {
-                // 如果处于暂停状态，先解除暂停以便任务能够响应取消
+                // If paused, resume first so the task can respond to cancellation
                 if (currentState == WorkState.Paused)
                 {
                     pauseEvent.Set();
                 }
 
-                // 取消任务
+                // Cancel task
                 cancellationTokenSource?.Cancel();
                 UpdateUI(WorkState.Stopping, LangManager.GetText("status.stopping"));
 
-                // 异步等待任务完成，避免阻塞UI线程
+                // Wait for task completion asynchronously to avoid blocking UI thread
                 if (workTask != null)
                 {
                     try
@@ -1515,7 +1515,7 @@ namespace FirewallManager
                     }
                 }
 
-                // 重置暂停事件
+                // Reset pause event
                 pauseEvent.Set();
 
                 UpdateUI(WorkState.Idle, LangManager.GetText("status.ready"));
@@ -1525,10 +1525,10 @@ namespace FirewallManager
 
         #endregion
 
-        #region 防火墙规则更新
+        #region Firewall Rule Updates
 
         /// <summary>
-        /// 启动更新规则任务
+        /// Start update rules task
         /// </summary>
         private void StartUpdateRulesTask()
         {
@@ -1545,20 +1545,20 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 更新防火墙规则
+        /// Update firewall rules
         /// </summary>
         private async Task UpdateFirewallRules(CancellationToken cancellationToken)
         {
             try
             {
-                // 等待暂停解除
+                // Wait for pause to be lifted
                 pauseEvent.WaitOne();
                 
-                // 再次检查取消请求（在暂停期间可能被取消）
+                // Check cancellation request again (may have been cancelled during pause)
                 cancellationToken.ThrowIfCancellationRequested();
                 
-                // 使用防火墙服务更新规则
-                var result = await firewallService.UpdateFirewallRules(monitoredTargets.Cast<dynamic>().ToList(), cancellationToken, (state, text) => UpdateUI(WorkState.Running, text));
+                // Use firewall service to update rules
+                var result = await firewallService.UpdateFirewallRules(monitoredTargets, cancellationToken, (state, text) => UpdateUI(WorkState.Running, text));
                 
                 UpdateUI(WorkState.Idle, LangManager.GetText("status.updateCompleted", result.addedCount, result.skippedCount));
                 LogManager.Info(LangManager.GetText("logMessages.updateCompleted", result.addedCount, result.skippedCount));
@@ -1577,13 +1577,13 @@ namespace FirewallManager
 
         #endregion
 
-        #region 导入导出功能
+        #region Import/Export Functions
 
         /// <summary>
-        /// 导出配置按钮点击事件
+        /// Export config button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void exportConfigButton_Click(object sender, EventArgs e)
         {
             try
@@ -1602,7 +1602,7 @@ namespace FirewallManager
                 {
                     string exportPath = saveFileDialog.FileName;
 
-                    // 创建导出配置对象
+                    // Create export config object
                     var exportConfig = new
                     {
                         Version = "1.0",
@@ -1614,7 +1614,7 @@ namespace FirewallManager
                         }).ToList()
                     };
 
-                    string json = JsonSerializer.Serialize(exportConfig, new JsonSerializerOptions { WriteIndented = true });
+                    string json = JsonSerializer.Serialize(exportConfig, Config.ExportJsonOptions);
                     ComHelper.AtomicWriteAllText(exportPath, json, Config.Utf8NoBom);
 
                     LogManager.Info($"Config exported to: {exportPath}");
@@ -1634,10 +1634,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 导入配置按钮点击事件
+        /// Import config button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void importConfigButton_Click(object sender, EventArgs e)
         {
             try
@@ -1649,13 +1649,21 @@ namespace FirewallManager
                 {
                     string importPath = openFileDialog.FileName;
 
-                    // 确认导入操作
+                    // The dialog accepts typed UNC paths; probing one would leak NTLM credentials.
+                    if (!ComHelper.IsLocalPathCandidate(importPath))
+                    {
+                        LogManager.Warning($"Config import rejected (network or device path): '{importPath}'");
+                        MessageBox.Show(LangManager.GetText("messages.importConfigInvalid"), LangManager.GetText("messages.importConfigInvalidTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    // Confirm import operation
                     if (MessageBox.Show(LangManager.GetText("messages.importConfigConfirm"), LangManager.GetText("messages.importConfigConfirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                     {
                         return;
                     }
 
-                    // 验证文件大小，防止DoS攻击（最大5MB）
+                    // Validate file size to prevent DoS attacks (max 5MB)
                     const long maxConfigFileSize = 5 * 1024 * 1024;
                     FileInfo fileInfo = new FileInfo(importPath);
                     if (fileInfo.Length > maxConfigFileSize)
@@ -1669,13 +1677,13 @@ namespace FirewallManager
                         return;
                     }
 
-                    // 读取配置文件
+                    // Read config file
                     string json;
                     try
                     {
                         using (var fs = File.Open(importPath, FileMode.Open, FileAccess.Read, FileShare.None))
                         {
-                            // 再次校验长度（防止TOCTOU）
+                            // Re-verify length (prevent TOCTOU)
                             if (fs.Length > maxConfigFileSize)
                             {
                                 throw new Exception("Config file size exceeded limit");
@@ -1697,11 +1705,10 @@ namespace FirewallManager
                         return;
                     }
 
-                    // 解析配置文件
+                    // Parse config file
                     try
                     {
-                        var options = new JsonSerializerOptions { MaxDepth = 10 };
-                        var importConfig = JsonSerializer.Deserialize<ImportConfig>(json, options);
+                        var importConfig = JsonSerializer.Deserialize<ImportConfig>(json, ComHelper.SafeJsonOptions);
 
                         if (importConfig == null || importConfig.Targets == null)
                         {
@@ -1709,18 +1716,18 @@ namespace FirewallManager
                             return;
                         }
 
-                        // 检查版本兼容性
+                        // Check version compatibility
                         if (!string.Equals(importConfig.Version, "1.0", StringComparison.OrdinalIgnoreCase))
                         {
                             MessageBox.Show(LangManager.GetText("messages.importConfigVersionMismatch"), LangManager.GetText("messages.importConfigVersionMismatchTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                             return;
                         }
 
-                        // 清空当前监控目标
+                        // Clear current monitored targets
                         monitoredTargets.Clear();
                         folderListBox.Items.Clear();
 
-                        // 导入新的监控目标
+                        // Import new monitored targets
                         int addedCount = 0;
                         int skippedCount = 0;
 
@@ -1732,7 +1739,7 @@ namespace FirewallManager
                                 continue;
                             }
 
-                            // 验证路径
+                            // Validate path
                             bool isDirectory = !target.IsExe;
                             string normalizedPath = NormalizeAndValidatePath(target.Path, isDirectory);
                             if (normalizedPath == null)
@@ -1757,8 +1764,15 @@ namespace FirewallManager
                             }
                         }
 
-                        // 保存配置
+                        // Save config
                         SaveMonitoredTargets();
+
+                        // Rebuild watchers: without this the watchers of removed directories keep
+                        // creating rules in the background and imported directories are not monitored.
+                        if (autoMonitorCheckBox.Checked)
+                        {
+                            InitializeFileWatchers();
+                        }
 
                         LogManager.Info($"Config imported: {addedCount} targets added, {skippedCount} skipped");
                         MessageBox.Show(
@@ -1782,7 +1796,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 导入配置数据结构
+        /// Import config data structure
         /// </summary>
         private class ImportConfig
         {
@@ -1792,7 +1806,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 导入目标数据结构
+        /// Import target data structure
         /// </summary>
         private class ImportTarget
         {
@@ -1802,19 +1816,17 @@ namespace FirewallManager
 
         #endregion
 
-        #region 窗体事件
+        #region Form Events
 
         /// <summary>
-        /// 窗体关闭事件
         /// Form closing event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             if (e.CloseReason == CloseReason.UserClosing)
             {
-                // 用户点击关闭按钮，最小化到托盘
                 // User clicked close button, minimize to tray
                 e.Cancel = true;
                 this.Hide();
@@ -1822,28 +1834,27 @@ namespace FirewallManager
             }
             else
             {
-                // 非用户关闭（如任务管理器、系统关机等），释放资源
-                // Non-user closing (e.g., Task Manager, system shutdown), release resources
+                // Non-user close (e.g., Task Manager, system shutdown), release resources
                 ReleaseResources();
             }
         }
 
         #endregion
 
-        #region 事件处理方法
+        #region Event Handler Methods
 
         /// <summary>
-        /// 粘贴菜单项点击事件
+        /// Paste menu item click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void pasteMenuItem_Click(object sender, EventArgs e)
         {
             try
             {
-                // 使用重试机制访问剪贴板
+                // Use retry mechanism to access clipboard
                 string clipboardText = null;
-                int retryCount = 5; // 增加重试次数
+                int retryCount = 5; // Increase retry count
                 for (int i = 0; i < retryCount; i++)
                 {
                     try
@@ -1853,13 +1864,14 @@ namespace FirewallManager
                             clipboardText = Clipboard.GetText();
                             if (!string.IsNullOrEmpty(clipboardText))
                             {
-                                break; // 成功获取文本，退出循环
+                                break; // Successfully retrieved text, exit loop
                             }
                         }
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-                        // 增加重试间隔，每次翻倍
+                        // Increase retry interval, doubling each time
+                        System.Diagnostics.Debug.WriteLine($"Clipboard retry {i + 1} failed: {ex.Message}");
                         System.Threading.Thread.Sleep(100 * (i + 1));
                     }
                 }
@@ -1870,7 +1882,7 @@ namespace FirewallManager
                     return;
                 }
                 
-                // 限制剪贴板内容大小
+                // Limit clipboard content size
                 if (clipboardText.Length > 1024 * 1024)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.clipboardContentTooLarge"));
@@ -1878,7 +1890,7 @@ namespace FirewallManager
                     return;
                 }
 
-                // 解析路径（支持多种分隔符：\r\n, \n, \r）
+                // Parse paths (supports multiple separators: \r\n, \n, \r)
                 string[] paths = clipboardText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 if (paths.Length > 1000)
                 {
@@ -1898,7 +1910,7 @@ namespace FirewallManager
                     if (string.IsNullOrWhiteSpace(trimmedPath))
                         continue;
 
-                    // 过滤控制字符
+                    // Filter control characters
                     trimmedPath = System.Text.RegularExpressions.Regex.Replace(
                         trimmedPath, @"[\x00-\x1F\x7F]", string.Empty);
                     if (string.IsNullOrWhiteSpace(trimmedPath))
@@ -1906,7 +1918,16 @@ namespace FirewallManager
 
                     LogManager.Info($"Processing path: '{trimmedPath}'");
 
-                    // 先尝试作为目录验证，再尝试作为文件验证
+                    // Probe the path only after confirming it cannot reach a remote host: Directory.Exists
+                    // on a UNC path would send the current user's NTLM credentials to that host.
+                    if (!ComHelper.IsLocalPathCandidate(trimmedPath))
+                    {
+                        LogManager.Warning($"Path rejected (network or device path): '{trimmedPath}'");
+                        invalidCount++;
+                        continue;
+                    }
+
+                    // First try to validate as directory, then as file
                     string normalizedPath = null;
                     if (Directory.Exists(trimmedPath))
                     {
@@ -1970,13 +1991,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 添加可执行文件菜单项点击事件
+        /// Add executable file menu item click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void addExeToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 打开文件选择对话框
+            // Open file selection dialog
             using (var openFileDialog = new OpenFileDialog())
             {
                 openFileDialog.Title = LangManager.GetText("messages.selectExeFile");
@@ -1987,7 +2008,7 @@ namespace FirewallManager
                 {
                     string selectedPath = openFileDialog.FileName;
                     
-                    // 规范化和验证路径
+                    // Normalize and validate path
                     string normalizedPath = NormalizeAndValidatePath(selectedPath, false);
                     if (normalizedPath == null)
                     {
@@ -1999,7 +2020,7 @@ namespace FirewallManager
                     {
                         if (TryAddPathToMonitoring(normalizedPath) != null)
                         {
-                            SaveMonitoredTargets(); // 保存监控目标
+                            SaveMonitoredTargets(); // Save monitored targets
                             LogManager.Info(LangManager.GetText("logMessages.addExeToMonitor", normalizedPath));
                         }
                     }
@@ -2008,10 +2029,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 显示主窗体菜单项点击事件
+        /// Show main form menu item click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void showMainFormToolStripMenuItem_Click(object sender, EventArgs e)
         {
             this.Show();
@@ -2019,7 +2040,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 更新规则菜单项点击事件
+        /// Update rules menu item click event
         /// </summary>
         private void updateRulesTrayToolStripMenuItem_Click(object sender, EventArgs e)
         {
@@ -2028,23 +2049,22 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 退出菜单项点击事件
+        /// Exit menu item click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void exitToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // 释放资源
+            // Release resources
             ReleaseResources();
             Application.Exit();
         }
 
         /// <summary>
-        /// 托盘图标双击事件
         /// Tray icon double click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void trayIcon_MouseDoubleClick(object sender, MouseEventArgs e)
         {
             this.Show();
@@ -2052,11 +2072,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 窗体调整大小事件
         /// Form resize event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void Form1_Resize(object sender, EventArgs e)
         {
             if (this.WindowState == FormWindowState.Minimized)

@@ -1,0 +1,25 @@
+# Auto-detect text files, normalize to LF in repository
+* text=auto eol=lf
+
+# C# source: prefer CRLF on Windows checkout (VS/.NET convention)
+*.cs text eol=crlf
+*.csproj text eol=crlf
+*.sln text eol=crlf
+
+# JSON / XML / config: LF both sides
+*.json text eol=lf
+*.xml text eol=lf
+*.config text eol=lf
+
+# Markdown: LF
+*.md text eol=lf
+
+# PowerShell scripts: CRLF (Windows convention)
+*.ps1 text eol=crlf
+
+# Binary assets — never touch line endings
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pdb binary

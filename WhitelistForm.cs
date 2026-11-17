@@ -12,13 +12,13 @@ using System.Threading.Tasks;
 namespace FirewallManager
 {
     /// <summary>
-    /// 白名单管理窗口
-    /// 用于管理防火墙白名单
+    /// Whitelist Management Window
+    /// Used to manage firewall whitelist
     /// </summary>
     public partial class WhitelistForm : Form
     {
         #region UI Controls
-        // UI 控件定义
+        // UI control definitions
         private System.Windows.Forms.Button btnAdd;
         private System.Windows.Forms.Button btnRemove;
         private System.Windows.Forms.Button btnClear;
@@ -28,70 +28,76 @@ namespace FirewallManager
         #endregion
 
         /// <summary>
-        /// 白名单列表
-        /// 当前窗口显示的白名单项目列表
+        /// Whitelist list
+        /// List of whitelist items displayed in the current window
         /// </summary>
         private List<string> whitelist = new List<string>();
 
         /// <summary>
-        /// 白名单缓存
-        /// 使用 HashSet 实现 O(1) 查找
-        /// 键为规范化后的路径（全小写）
-        /// 使用 volatile 实现 copy-on-write 模式，减少锁竞争
+        /// Set when the on-disk whitelist could not be trusted. Saving is refused in that state,
+        /// because the empty list box would otherwise overwrite the user's existing entries.
+        /// </summary>
+        private bool whitelistLoadFailed;
+
+        /// <summary>
+        /// Whitelist cache
+        /// Uses HashSet for O(1) lookup
+        /// Keys are normalized paths (all lowercase)
+        /// Uses volatile to implement copy-on-write pattern, reducing lock contention
         /// </summary>
         private static volatile HashSet<string> whitelistCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         
         /// <summary>
-        /// 白名单缓存加载标志
+        /// Whitelist cache loaded flag
         /// </summary>
         private static volatile bool whitelistCacheLoaded = false;
 
         /// <summary>
-        /// 用于确保线程安全的锁对象
+        /// Lock object for thread safety
         /// Lock object for ensuring thread safety
         /// </summary>
         private static readonly object whitelistLock = new object();
         
         /// <summary>
-        /// 用于静态资源访问的锁对象
+        /// Lock object for static resource access
         /// Lock object for static resource access
         /// </summary>
         private static readonly object staticResourceLock = new object();
 
         /// <summary>
-        /// 白名单文件监控器
+        /// Whitelist file watcher
         /// Whitelist file watcher
         /// </summary>
         private static System.IO.FileSystemWatcher whitelistWatcher;
 
         /// <summary>
-        /// 防抖取消令牌源
+        /// Debounce cancellation token source
         /// Debounce cancellation token source
         /// </summary>
         private static CancellationTokenSource debounceCts;
 
         /// <summary>
-        /// 静态构造函数
         /// Static constructor
-        /// 初始化文件系统监控器
+        /// Static constructor
+        /// Initialize file system watcher
         /// Initialize file system watcher
         /// </summary>
         static WhitelistForm()
         {
             try
             {
-                // 初始化白名单文件监控器
+                // Initialize whitelist file watcher
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
                 string configDir = Path.GetDirectoryName(configPath);
                 
-                // 确保配置目录存在
+                // Ensure config directory exists
                 if (!Directory.Exists(configDir))
                 {
                     Directory.CreateDirectory(configDir);
                     LogManager.Info(LangManager.GetText("logMessages.configDirCreated", configDir));
                 }
                 
-                // 初始化文件监控器
+                // Initialize file watcher
                 whitelistWatcher = new System.IO.FileSystemWatcher();
                 whitelistWatcher.Path = configDir;
                 whitelistWatcher.Filter = Config.WHITELIST_FILE;
@@ -108,19 +114,18 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 白名单文件变化事件处理（使用异步防抖模式）
         /// Whitelist file changed event handler (using async debounce pattern)
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private static async void WhitelistFileChanged(object sender, System.IO.FileSystemEventArgs e)
         {
             CancellationTokenSource localCts;
             
-            // 使用锁来安全地取消和创建新的 CancellationTokenSource
+            // Use lock to safely cancel and create new CancellationTokenSource
             lock (staticResourceLock)
             {
-                // 取消之前的延迟任务
+                // Cancel previous delayed task
                 debounceCts?.Cancel();
                 debounceCts = new CancellationTokenSource();
                 localCts = debounceCts;
@@ -128,27 +133,27 @@ namespace FirewallManager
             
             try
             {
-                // 使用异步延迟代替 Thread.Sleep，避免阻塞事件处理线程
+                // Use async delay instead of Thread.Sleep to avoid blocking the event handler thread
                 await Task.Delay(200, localCts.Token);
                 
-                // 再次检查是否已被取消（在延迟期间可能已被 ReleaseStaticResources 释放）
+                // Re-check if cancelled (may have been released by ReleaseStaticResources during delay)
                 if (localCts.IsCancellationRequested)
                 {
                     return;
                 }
                 
-                // 在后台线程中刷新缓存，避免阻塞UI线程
+                // Refresh cache on background thread to avoid blocking UI thread
                 await Task.Run(() => RefreshWhitelistCache());
                 
                 LogManager.Info(LangManager.GetText("logMessages.whitelistFileChangedCacheRefreshed"));
             }
             catch (ObjectDisposedException)
             {
-                // 资源已被释放（ReleaseStaticResources），静默退出
+                // Resource has been released (ReleaseStaticResources), exit silently
             }
             catch (OperationCanceledException)
             {
-                // 防抖取消是正常行为，不需要记录错误
+                // Debounce cancellation is normal behavior, no need to log error
             }
             catch (Exception ex)
             {
@@ -157,19 +162,19 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 释放静态资源
         /// Release static resources
-        /// 用于在应用程序退出时清理文件监控器等资源
+        /// Release static resources
+        /// Used to clean up resources like file watcher when application exits
         /// Used to clean up resources like file watcher when application exits
         /// </summary>
         public static void ReleaseStaticResources()
         {
-            // 使用锁来确保线程安全的资源释放
+            // Use lock to ensure thread-safe resource release
             lock (staticResourceLock)
             {
                 try
                 {
-                    // 取消防抖任务
+                    // Cancel debounce task
                     if (debounceCts != null)
                     {
                         try
@@ -187,7 +192,7 @@ namespace FirewallManager
                         }
                     }
                     
-                    // 释放文件监控器
+                    // Release file watcher
                     if (whitelistWatcher != null)
                     {
                         try
@@ -216,18 +221,16 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 构造函数
         /// Constructor
-        /// 初始化白名单管理窗口，包括UI组件和白名单加载
         /// Initialize whitelist management window, including UI components and whitelist loading
         /// </summary>
         public WhitelistForm()
         {
-            // 简单初始化
+            // Simple initialization
             this.Text = LangManager.GetText("forms.whitelistForm");
             this.Size = new Size(600, 400);
             
-            // 创建基本控件
+            // Create basic controls
             whitelistListBox = new ListBox();
             whitelistListBox.Dock = DockStyle.Fill;
             
@@ -256,7 +259,7 @@ namespace FirewallManager
             btnClose.Size = new Size(100, 30);
             btnClose.Click += btnClose_Click;
             
-            // 布局 - 方案1：顶部按钮栏，底部操作按钮
+            // Layout - Option 1: top button bar, bottom action button
             TableLayoutPanel panel = new TableLayoutPanel();
             panel.Dock = DockStyle.Fill;
             panel.ColumnCount = 4;
@@ -269,7 +272,7 @@ namespace FirewallManager
             panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             
-            // 顶部按钮栏
+            // Top button bar
             panel.Controls.Add(btnAdd, 0, 0);
             panel.SetColumnSpan(btnAdd, 1);
             panel.SetCellPosition(btnAdd, new TableLayoutPanelCellPosition(0, 0));
@@ -286,34 +289,90 @@ namespace FirewallManager
             panel.SetColumnSpan(btnSave, 1);
             panel.SetCellPosition(btnSave, new TableLayoutPanelCellPosition(3, 0));
             
-            // 中间列表
+            // Middle list
             panel.Controls.Add(whitelistListBox, 0, 1);
             panel.SetColumnSpan(whitelistListBox, 4);
             
-            // 底部关闭按钮
+            // Bottom close button
             panel.Controls.Add(btnClose, 0, 2);
             panel.SetColumnSpan(btnClose, 4);
             btnClose.Anchor = AnchorStyles.None;
             
             this.Controls.Add(panel);
             
-            // 加载白名单
+            // Load whitelist
             LoadWhitelist();
         }
 
         /// <summary>
-        /// 加载白名单
+        /// Whitelists written before integrity signing existed have no .hmac sidecar. They may be
+        /// migrated when no integrity file exists for this whitelist and the data directory is
+        /// actually protected, so a non-elevated process could not have planted the content.
+        /// The HMAC key itself is not part of the condition: it is created as soon as the main
+        /// config is signed, so requiring its absence would lock out every legacy user.
+        /// </summary>
+        /// <param name="configPath">Whitelist file path</param>
+        /// <param name="json">File content on success</param>
+        /// <returns>true when a legacy unsigned whitelist was read</returns>
+        private static bool TryReadLegacyUnsignedWhitelist(string configPath, out string json)
+        {
+            json = null;
+
+            if (Config.IntegrityFileExists(configPath) || !Config.IsAppDataDirectorySecured)
+            {
+                return false;
+            }
+
+            try
+            {
+                json = File.ReadAllText(configPath, Config.Utf8NoBom);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    json = null;
+                    return false;
+                }
+
+                if (!Config.SaveConfigIntegrityHash(configPath))
+                {
+                    LogManager.Warning("Legacy whitelist was read but could not be signed; it will be verified again next time");
+                }
+
+                LogManager.Info("Legacy unsigned whitelist migrated and signed");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error($"Failed to read legacy whitelist: {ex.Message}");
+                json = null;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Load whitelist
         /// </summary>
         private void LoadWhitelist()
         {
             try
             {
+                whitelistLoadFailed = false;
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
                 
                 if (File.Exists(configPath))
                 {
-                    string json = File.ReadAllText(configPath, Encoding.UTF8);
+                    // Verify the HMAC before trusting the content. Loading (and later re-signing) a
+                    // tampered file would launder injected entries into a valid whitelist.
+                    string json;
+                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json) &&
+                        !TryReadLegacyUnsignedWhitelist(configPath, out json))
+                    {
+                        whitelistLoadFailed = true;
+                        LogManager.Error(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"));
+                        MessageBox.Show(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"),
+                            LangManager.GetText("messages.loadWhitelistFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
                     whitelist = JsonSerializer.Deserialize<List<string>>(json, ComHelper.SafeJsonOptions) ?? new List<string>();
                     
                     foreach (var item in whitelist)
@@ -332,21 +391,28 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 白名单保存事件
         /// Whitelist saved event
-        /// 当白名单保存后触发，通知主窗体更新防火墙规则
         /// Triggered when whitelist is saved, notifies main form to update firewall rules
         /// </summary>
         public event EventHandler WhitelistSaved;
         
         /// <summary>
-        /// 保存白名单
         /// Save whitelist
         /// </summary>
         private void SaveWhitelist()
         {
             try
             {
+                if (whitelistLoadFailed)
+                {
+                    // The existing file failed verification, so it was never loaded. Writing the empty
+                    // list box back would silently destroy the user's entries.
+                    LogManager.Error("Refusing to save whitelist: the existing file failed the integrity check");
+                    MessageBox.Show(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"),
+                        LangManager.GetText("messages.saveWhitelistFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
                 string configPath = Config.GetAppDataFilePath(Config.WHITELIST_FILE);
                 Directory.CreateDirectory(Path.GetDirectoryName(configPath));
                 
@@ -359,16 +425,23 @@ namespace FirewallManager
                 string json = JsonSerializer.Serialize(whitelist, new JsonSerializerOptions { WriteIndented = true });
                 ComHelper.AtomicWriteAllText(configPath, json, Config.Utf8NoBom);
 
-                // 保存后更新完整性校验值
-                Config.SaveConfigIntegrityHash(configPath);
+                // Update integrity check value after saving
+                if (!Config.SaveConfigIntegrityHash(configPath))
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.configIntegrityHashSaveFailed"));
+                    MessageBox.Show(
+                        LangManager.GetText("messages.saveWhitelistFailed", LangManager.GetText("logMessages.configIntegrityHashSaveFailed")),
+                        LangManager.GetText("messages.saveWhitelistFailedTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
 
-                // 设置安全文件权限，限制仅管理员和SYSTEM账户可修改
+                // Set secure file permissions, restrict modification to Administrators and SYSTEM accounts only
                 Config.SetSecureFilePermissionsPublic(configPath);
 
                 LogManager.Info(LangManager.GetText("logMessages.saveWhitelistItems", whitelist.Count));
                 MessageBox.Show(LangManager.GetText("messages.whitelistSaved"), LangManager.GetText("messages.successTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 
-                // 触发白名单保存事件
+                // Trigger whitelist saved event
                 WhitelistSaved?.Invoke(this, EventArgs.Empty);
             }
             catch (Exception ex)
@@ -379,7 +452,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 添加按钮点击事件
+        /// Add button click event
         /// </summary>
         private void btnAdd_Click(object sender, EventArgs e)
         {
@@ -392,6 +465,14 @@ namespace FirewallManager
                     string selectedPath = openFileDialog.FileName;
                     try
                     {
+                        // A UNC path typed into the dialog would make the symbolic-link probe below
+                        // contact the remote host and leak NTLM credentials.
+                        if (!ComHelper.IsLocalPathCandidate(selectedPath))
+                        {
+                            LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectUncPath", selectedPath));
+                            return;
+                        }
+
                         string normalizedPath = Path.GetFullPath(selectedPath);
                         if (ComHelper.IsSymbolicLink(normalizedPath))
                         {
@@ -413,11 +494,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 移除按钮点击事件
         /// Remove button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnRemove_Click(object sender, EventArgs e)
         {
             if (whitelistListBox.SelectedItem != null)
@@ -429,11 +509,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 清空按钮点击事件
         /// Clear button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnClear_Click(object sender, EventArgs e)
         {
             if (MessageBox.Show(LangManager.GetText("messages.clearWhitelistConfirm"), LangManager.GetText("messages.confirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
@@ -452,34 +531,31 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 保存按钮点击事件
         /// Save button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnSave_Click(object sender, EventArgs e)
         {
             SaveWhitelist();
         }
 
         /// <summary>
-        /// 关闭按钮点击事件
         /// Close button click event
         /// </summary>
-        /// <param name="sender">发送者</param>
-        /// <param name="e">事件参数</param>
+        /// <param name="sender">Sender</param>
+        /// <param name="e">Event arguments</param>
         private void btnClose_Click(object sender, EventArgs e)
         {
             this.Close();
         }
         
         /// <summary>
-        /// 检查应用程序是否在白名单中
-        /// 使用缓存和规范化路径进行高效匹配，O(1) 查找复杂度
-        /// Check if application is in whitelist using O(1) hash lookup
+        /// Check if application is in whitelist
+        /// Uses cached normalized paths for efficient O(1) hash lookup
         /// </summary>
-        /// <param name="appPath">应用程序路径</param>
-        /// <returns>是否在白名单中</returns>
+        /// <param name="appPath">Application path</param>
+        /// <returns>Whether it is in whitelist</returns>
         public static bool IsInWhitelist(string appPath)
         {
             try
@@ -489,7 +565,7 @@ namespace FirewallManager
                     return false;
                 }
 
-                // 确保缓存已加载（线程安全的双重检查）
+                // Ensure cache is loaded (thread-safe double-checked locking)
                 if (!whitelistCacheLoaded)
                 {
                     lock (whitelistLock)
@@ -512,8 +588,8 @@ namespace FirewallManager
                     return false;
                 }
 
-                // 使用 copy-on-write 模式：读取时不加锁，直接访问 volatile 引用
-                // 刷新时会替换整个集合，保证读取操作的无锁化和线程安全
+                // Use copy-on-write pattern: read without lock, directly access volatile reference
+                // Refresh replaces the entire collection atomically to keep reads lock-free and thread-safe
                 var cacheSnapshot = whitelistCache;
                 return cacheSnapshot.Contains(normalizedAppPath);
             }
@@ -524,7 +600,6 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 刷新白名单缓存
         /// Refresh whitelist cache
         /// </summary>
         public static void RefreshWhitelistCache()
@@ -541,7 +616,7 @@ namespace FirewallManager
                 }
                 else
                 {
-                    // 验证文件大小，防止恶意大文件导致内存耗尽（先检查后读取）
+                    // Validate file size to prevent memory exhaustion from malicious large files (check before read)
                     var fileInfo = new FileInfo(configPath);
                     if (fileInfo.Length > 10 * 1024 * 1024)
                     {
@@ -549,9 +624,10 @@ namespace FirewallManager
                         return;
                     }
 
-                    // 验证配置文件完整性并读取内容（原子操作，防止TOCTOU攻击）
+                    // Verify config integrity and read content (atomic operation, prevents TOCTOU attacks)
                     string json;
-                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json))
+                    if (!Config.VerifyConfigIntegrityAndRead(configPath, out json) &&
+                        !TryReadLegacyUnsignedWhitelist(configPath, out json))
                     {
                         LogManager.Error(LangManager.GetText("logMessages.whitelistIntegrityCheckFailed"));
                         newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -563,7 +639,7 @@ namespace FirewallManager
                         newCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         if (paths != null)
                         {
-                            // 验证条目数量，防止恶意大量条目导致 DoS
+                            // Validate entry count to prevent DoS from malicious large number of entries
                             if (paths.Count > 100000)
                             {
                                 LogManager.Error(LangManager.GetText("logMessages.whitelistTooManyEntries", paths.Count));
@@ -577,14 +653,14 @@ namespace FirewallManager
                                 {
                                     string normalized = Path.GetFullPath(path);
                                     
-                                    // 拒绝扩展长度路径前缀，防止路径绕过攻击
+                                    // Reject extended-length path prefix to prevent path traversal bypass
                                     if (normalized.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
                                     {
                                         LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectExtendedPath", normalized));
                                         continue;
                                     }
                                     
-                                    // 拒绝 UNC 路径，防止网络共享路径注入
+                                    // Reject UNC paths to prevent network share path injection
                                     if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
                                     {
                                         LogManager.Warning(LangManager.GetText("logMessages.whitelistRejectUncPath", normalized));
@@ -595,7 +671,7 @@ namespace FirewallManager
                                 }
                                 catch
                                 {
-                                    // 无法规范化的路径不加入缓存
+                                    // Paths that cannot be normalized are not added to cache
                                     LogManager.Warning(LangManager.GetText("logMessages.whitelistInvalidPath", path));
                                 }
                             }
@@ -603,8 +679,8 @@ namespace FirewallManager
                     }
                 }
 
-                // 使用 copy-on-write 模式：先构建新缓存，再原子替换引用
-                // 锁只保护替换操作，不保护读取，减少锁竞争
+                // Use copy-on-write pattern: build new cache first, then atomically replace reference
+                // Lock only protects replacement, not reads, reducing lock contention
                 lock (whitelistLock)
                 {
                     whitelistCache = newCache;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -8,39 +9,39 @@ using System.Text.Json;
 namespace FirewallManager
 {
     /// <summary>
-    /// 国际化管理类
-    /// 负责加载和管理语言文件，提供翻译文本的获取方法
+    /// Internationalization manager
+    /// Loads and manages language files, and provides methods for retrieving translated text.
     /// </summary>
     public class LangManager
     {
-        // 语言文件目录和默认语言已移至 Config 类
+        // Language file directory and default language have been moved to the Config class.
 
         /// <summary>
-        /// 当前语言
-        /// 存储当前使用的语言代码（如 "en", "zh"）
+        /// Current language
+        /// Stores the currently active language code (e.g., "en", "zh").
         /// </summary>
         private static string currentLanguage = Config.DEFAULT_LANGUAGE;
 
         /// <summary>
-        /// 语言资源字典
-        /// 存储所有语言的翻译文本，键为语言代码，值为翻译字典
+        /// Language resource dictionary
+        /// Stores translated text for all languages. Keys are language codes, values are translation dictionaries.
         /// </summary>
         private static readonly Dictionary<string, Dictionary<string, string>> languageResources = new Dictionary<string, Dictionary<string, string>>();
         
         /// <summary>
-        /// 翻译缓存
-        /// 使用 ConcurrentDictionary 实现线程安全的热点翻译缓存
+        /// Translation cache
+        /// Thread-safe hot translation cache backed by ConcurrentDictionary.
         /// </summary>
         private static readonly ConcurrentDictionary<string, string> translationCache = new ConcurrentDictionary<string, string>();
         
         /// <summary>
-        /// 用于线程安全访问的锁对象
+        /// Lock object used for thread-safe access.
         /// </summary>
         private static readonly object resourceLock = new object();
 
         /// <summary>
-        /// 预编译的正则表达式：匹配 {0}、{1} 等格式化占位符
-        /// 使用静态编译避免每次调用 GetText 时重新编译正则
+        /// Pre-compiled regex that matches formatting placeholders like {0}, {1}.
+        /// Static compilation avoids recompiling the regex on every GetText call.
         /// </summary>
         private static readonly System.Text.RegularExpressions.Regex _placeholderRegex =
             new System.Text.RegularExpressions.Regex(
@@ -48,17 +49,17 @@ namespace FirewallManager
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>
-        /// 初始化国际化管理器
+        /// Initializes the internationalization manager.
         /// </summary>
         static LangManager()
         {
             LoadLanguageFiles();
-            // 尝试根据系统语言设置当前语言
+            // Attempt to set the current language based on the system locale.
             TrySetSystemLanguage();
         }
 
         /// <summary>
-        /// 加载所有语言文件
+        /// Loads all language files.
         /// </summary>
         private static void LoadLanguageFiles()
         {
@@ -176,11 +177,11 @@ namespace FirewallManager
         private const int _maxJsonDepth = 10;
 
         /// <summary>
-        /// 递归处理 JSON 节点（带深度限制）
+        /// Recursively processes a JSON node (with a depth limit).
         /// </summary>
-        /// <param name="element">JSON 元素</param>
-        /// <param name="prefix">当前路径前缀</param>
-        /// <param name="translations">翻译字典</param>
+        /// <param name="element">JSON element</param>
+        /// <param name="prefix">Current path prefix</param>
+        /// <param name="translations">Translation dictionary</param>
         private static void ProcessJsonNode(JsonElement element, string prefix, Dictionary<string, string> translations)
         {
             ProcessJsonNode(element, prefix, translations, 0);
@@ -190,7 +191,7 @@ namespace FirewallManager
         {
             if (depth >= _maxJsonDepth)
             {
-                // 直接使用硬编码消息，避免递归调用 GetText
+                // Use a hard-coded message directly to avoid recursive calls into GetText.
                 LogManager.Warning("JSON parsing depth exceeded maximum limit");
                 return;
             }
@@ -210,14 +211,14 @@ namespace FirewallManager
                         translations[prefix] = element.GetString();
                     }
                     break;
-                // 忽略其他类型
+                // Ignore all other JSON value kinds.
                 default:
                     break;
             }
         }
 
         /// <summary>
-        /// 尝试根据系统语言设置当前语言
+        /// Attempts to set the current language based on the system locale.
         /// </summary>
         private static void TrySetSystemLanguage()
         {
@@ -236,10 +237,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 设置当前语言
-        /// 切换应用程序的显示语言
+        /// Sets the current language.
+        /// Switches the display language of the application.
         /// </summary>
-        /// <param name="languageCode">语言代码（如 "en", "zh"）</param>
+        /// <param name="languageCode">Language code (e.g., "en", "zh")</param>
         public static void SetLanguage(string languageCode)
         {
             lock (resourceLock)
@@ -253,23 +254,23 @@ namespace FirewallManager
                     currentLanguage = Config.DEFAULT_LANGUAGE;
                 }
             }
-            // 语言切换时清空缓存，确保获取最新翻译
+            // Clear the cache when the language changes to ensure fresh translations.
             translationCache.Clear();
         }
 
         /// <summary>
-        /// 获取当前语言
+        /// Gets the current language.
         /// </summary>
-        /// <returns>当前语言代码</returns>
+        /// <returns>Current language code</returns>
         public static string GetCurrentLanguage()
         {
             return currentLanguage;
         }
 
         /// <summary>
-        /// 检查语言资源是否已加载
+        /// Checks whether language resources have been loaded.
         /// </summary>
-        /// <returns>是否已加载语言资源</returns>
+        /// <returns>True if language resources are loaded; otherwise false</returns>
         public static bool IsLanguageLoaded()
         {
             lock (resourceLock)
@@ -279,7 +280,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 重新加载语言文件
+        /// Reloads all language files.
         /// </summary>
         public static void ReloadLanguageFiles()
         {
@@ -287,20 +288,17 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 获取翻译文本
+        /// Gets the translated text.
         /// </summary>
-        /// <param name="key">文本键值，格式为 "section.key"</param>
         /// <param name="key">Text key in format "section.key"</param>
-        /// <param name="args">格式化参数</param>
         /// <param name="args">Formatting parameters</param>
-        /// <returns>翻译后的文本</returns>
         /// <returns>Translated text</returns>
         public static string GetText(string key, params object[] args)
         {
             try
             {
                 string text = GetTextInternal(key);
-                if (!string.IsNullOrEmpty(text) && args != null && args.Length > 0)
+                if (!string.IsNullOrEmpty(text) && args.Length > 0)
                 {
                     int placeholderCount = _placeholderRegex.Matches(text).Count;
                     if (placeholderCount > 0)
@@ -323,14 +321,15 @@ namespace FirewallManager
                 }
                 return text;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.WriteLine($"LangManager.GetText failed for key '{key}': {ex.Message}");
                 return key;
             }
         }
 
         /// <summary>
-        /// 内置回退翻译字典（语言文件加载失败时使用）
+        /// Built-in fallback translation dictionary (used when language files fail to load).
         /// </summary>
         private static readonly Dictionary<string, string> FallbackTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -464,10 +463,10 @@ namespace FirewallManager
         };
 
         /// <summary>
-        /// 内部方法：获取翻译文本
+        /// Internal helper: retrieves the translated text.
         /// </summary>
-        /// <param name="key">文本键值，格式为 "section.key"</param>
-        /// <returns>翻译后的文本</returns>
+        /// <param name="key">Text key in format "section.key"</param>
+        /// <returns>Translated text</returns>
         private static string GetTextInternal(string key)
         {
             if (string.IsNullOrEmpty(key))
@@ -475,18 +474,16 @@ namespace FirewallManager
                 return string.Empty;
             }
 
-            // 构建缓存键，包含当前语言
-            // Build cache key including current language
+            // Build cache key including the current language.
             string cacheKey = $"{currentLanguage}:{key}";
             
-            // 尝试从缓存获取
-            // Try to get from cache first
+            // Try to get from cache first.
             if (translationCache.TryGetValue(cacheKey, out string cachedText))
             {
                 return cachedText;
             }
 
-            // 尝试从当前语言获取
+            // Try to get from the current language.
             string text = GetTextFromLanguage(key, currentLanguage);
             if (!string.IsNullOrEmpty(text))
             {
@@ -494,7 +491,7 @@ namespace FirewallManager
                 return text;
             }
 
-            // 如果当前语言没有找到，尝试从默认语言获取
+            // If not found in the current language, fall back to the default language.
             text = GetTextFromLanguage(key, Config.DEFAULT_LANGUAGE);
             if (!string.IsNullOrEmpty(text))
             {
@@ -502,24 +499,24 @@ namespace FirewallManager
                 return text;
             }
 
-            // 如果语言文件加载失败，尝试从内置回退字典获取
+            // If language files failed to load, try the built-in fallback dictionary.
             if (FallbackTranslations.TryGetValue(key, out string fallbackText))
             {
                 translationCache.TryAdd(cacheKey, fallbackText);
                 return fallbackText;
             }
 
-            // 如果都没有找到，返回原始键值并缓存
+            // If nothing was found, return the raw key and cache it.
             translationCache.TryAdd(cacheKey, key);
             return key;
         }
 
         /// <summary>
-        /// 从指定语言获取文本
+        /// Retrieves text from the specified language.
         /// </summary>
-        /// <param name="key">文本键值，格式为 "section.key"</param>
-        /// <param name="languageCode">语言代码</param>
-        /// <returns>翻译后的文本</returns>
+        /// <param name="key">Text key in format "section.key"</param>
+        /// <param name="languageCode">Language code</param>
+        /// <returns>Translated text</returns>
         private static string GetTextFromLanguage(string key, string languageCode)
         {
             lock (resourceLock)

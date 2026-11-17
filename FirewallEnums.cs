@@ -3,59 +3,59 @@ using System;
 namespace FirewallManager
 {
     /// <summary>
-    /// 防火墙动作枚举
+    /// Firewall action enum
     /// </summary>
     public enum FirewallAction
     {
         /// <summary>
-        /// 阻止
+        /// Block
         /// </summary>
         Block = 0,
         
         /// <summary>
-        /// 允许
+        /// Allow
         /// </summary>
         Allow = 1
     }
 
     /// <summary>
-    /// 防火墙方向枚举
+    /// Firewall direction enum
     /// </summary>
     public enum FirewallDirection
     {
         /// <summary>
-        /// 入站
+        /// Inbound
         /// </summary>
         Inbound = 1,
         
         /// <summary>
-        /// 出站
+        /// Outbound
         /// </summary>
         Outbound = 2
     }
 
     /// <summary>
-    /// 工作状态枚举
+    /// Work state enum
     /// </summary>
     public enum WorkState
     {
         /// <summary>
-        /// 空闲
+        /// Idle
         /// </summary>
         Idle,
         
         /// <summary>
-        /// 运行中
+        /// Running
         /// </summary>
         Running,
         
         /// <summary>
-        /// 暂停
+        /// Paused
         /// </summary>
         Paused,
         
         /// <summary>
-        /// 停止中
+        /// Stopping
         /// </summary>
         Stopping
     }

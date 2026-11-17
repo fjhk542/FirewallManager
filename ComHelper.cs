@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -12,6 +11,8 @@ namespace FirewallManager
     {
         public const uint GENERIC_READ = 0x80000000;
         public const uint FILE_SHARE_READ = 0x00000001;
+        public const uint FILE_SHARE_WRITE = 0x00000002;
+        public const uint FILE_SHARE_DELETE = 0x00000004;
         public const uint OPEN_EXISTING = 3;
         public const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 
@@ -28,40 +29,13 @@ namespace FirewallManager
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool CloseHandle(IntPtr hObject);
 
-        public const uint WINTRUST_ACTION_GENERIC_VERIFY_V2 = 0x00000002;
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern uint GetFinalPathNameByHandle(
+            IntPtr hFile,
+            System.Text.StringBuilder lpszFilePath,
+            uint cchFilePath,
+            uint dwFlags);
 
-        [StructLayout(LayoutKind.Sequential)]
-        public struct WINTRUST_FILE_INFO
-        {
-            public uint cbStruct;
-            public IntPtr pcwszFilePath;
-            public IntPtr hFile;
-            public IntPtr pgKnownSubject;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct WINTRUST_DATA
-        {
-            public uint cbStruct;
-            public IntPtr pPolicyCallbackData;
-            public IntPtr pSIPClientData;
-            public uint dwUIChoice;
-            public uint fdwRevocationChecks;
-            public uint dwUnionChoice;
-            public IntPtr pFile;
-            public uint dwStateAction;
-            public IntPtr hWVTStateData;
-            public string pwszURLReference;
-            public uint dwProvFlags;
-            public uint dwUIContext;
-            public IntPtr pSignatureSettings;
-        }
-
-        [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = false, CharSet = CharSet.Unicode)]
-        public static extern uint WinVerifyTrust(
-            IntPtr hWnd,
-            IntPtr pgActionID,
-            ref WINTRUST_DATA pWinTrustData);
     }
 }
 
@@ -70,7 +44,7 @@ namespace FirewallManager
     internal static class ComHelper
     {
         /// <summary>
-        /// 安全的JSON反序列化选项 - 限制最大深度防止嵌套攻击
+        /// Safe JSON deserialization options - limits max depth to prevent nesting attacks
         /// </summary>
         internal static readonly JsonSerializerOptions SafeJsonOptions = new JsonSerializerOptions
         {
@@ -78,13 +52,17 @@ namespace FirewallManager
         };
 
         /// <summary>
-        /// 使用固定CLSID创建COM对象并验证
-        /// 防止ProgID劫持攻击
+        /// Create a COM object from a fixed CLSID.
+        /// Before activation the server registration is verified (no per-user override and the server
+        /// binary lives inside the Windows directory) — see <see cref="ValidateComServerRegistration"/>.
+        /// Guessing a ProgID is not the threat here: HKCU\Software\Classes\CLSID takes precedence over
+        /// HKLM and can redirect the CLSID to an arbitrary DLL, which would then be loaded into this
+        /// elevated process. That is what the pre-activation check blocks.
         /// </summary>
-        /// <param name="clsid">CLSID字符串</param>
-        /// <param name="iid">接口IID字符串</param>
-        /// <param name="progId">ProgID（用于日志）</param>
-        /// <returns>COM对象，失败返回null</returns>
+        /// <param name="clsid">CLSID string</param>
+        /// <param name="iid">Interface IID string</param>
+        /// <param name="progId">ProgID (used for logging)</param>
+        /// <returns>COM object, returns null on failure</returns>
         internal static object CreateComObjectWithClsid(string clsid, string iid, string progId)
         {
             try
@@ -95,6 +73,15 @@ namespace FirewallManager
                 if (!Guid.TryParse(clsid, out clsidGuid) || !Guid.TryParse(iid, out iidGuid))
                 {
                     LogManager.Error(LangManager.GetText("logMessages.invalidGuidForComObject", progId));
+                    return null;
+                }
+
+                // Authoritative trust check: this must run BEFORE activation, because once
+                // Activator.CreateInstance returns, the server has already been loaded into the
+                // (elevated) process and post-activation property checks can no longer help.
+                if (!ValidateComServerRegistration(clsidGuid, progId))
+                {
+                    LogManager.Error(LangManager.GetText("logMessages.comObjectValidationFailed", progId));
                     return null;
                 }
 
@@ -112,7 +99,7 @@ namespace FirewallManager
                     return null;
                 }
 
-                // 验证 COM 对象
+                // Validate the COM object
                 bool clsidValid = ValidateComObjectClsid(comObject, clsidGuid);
                 bool iidValid = ValidateComObjectIid(comObject, iidGuid);
 
@@ -123,8 +110,8 @@ namespace FirewallManager
                     return null;
                 }
 
-                // 如果 CLSID 验证通过，即使 IID 验证失败也允许使用
-                // （某些 COM 对象的 IID 可能与文档不完全一致）
+                // Post-activation checks are diagnostic only. A mismatching IID is tolerated because
+                // the server binary itself was already verified before activation.
                 if (!iidValid && clsidValid)
                 {
                     LogManager.Warning($"COM object IID validation failed but CLSID is valid, proceeding with {progId}");
@@ -140,7 +127,126 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证 COM 对象的 CLSID
+        /// Validates where the CLSID will actually be served from, before any code is loaded.
+        /// Two checks are applied:
+        ///   1. A per-user registration (HKCU\Software\Classes\CLSID\{...}) is rejected outright.
+        ///      HKCU takes precedence over HKLM during COM activation, so a non-elevated process
+        ///      running as the same user could otherwise redirect the CLSID to its own DLL and have
+        ///      it loaded inside this elevated process.
+        ///   2. The resolved InprocServer32 / LocalServer32 binary must live under the Windows
+        ///      directory (System32 / SysWOW64 / WinSxS), so a machine-wide registration pointing at
+        ///      an arbitrary path is refused as well.
+        /// This is the authoritative identity check; the CLSID/IID checks performed after activation
+        /// are diagnostic only and cannot detect a substituted server.
+        /// </summary>
+        /// <param name="clsid">CLSID to validate</param>
+        /// <param name="progId">ProgID used for logging</param>
+        /// <returns>true only when the registration is machine-wide and the server binary is a Windows component</returns>
+        private static bool ValidateComServerRegistration(Guid clsid, string progId)
+        {
+            try
+            {
+                string clsidKeyPath = @"Software\Classes\CLSID\" + clsid.ToString("B");
+
+                // 1. Reject any per-user registration of this CLSID. Both registry views are checked
+                //    because a 32-bit and a 64-bit registration are stored in different places and
+                //    either one can win during activation.
+                foreach (var view in new[] { Microsoft.Win32.RegistryView.Registry64, Microsoft.Win32.RegistryView.Registry32 })
+                {
+                    using (var hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, view))
+                    using (var perUserKey = hkcu.OpenSubKey(clsidKeyPath))
+                    {
+                        if (perUserKey != null)
+                        {
+                            LogManager.Error($"Per-user COM registration detected for {progId} ({clsid:B}); refusing to activate");
+                            return false;
+                        }
+                    }
+                }
+
+                // 2. Resolve the server binary from the machine-wide registration.
+                string serverPath = null;
+                foreach (var view in new[] { Microsoft.Win32.RegistryView.Registry64, Microsoft.Win32.RegistryView.Registry32 })
+                {
+                    using (var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, view))
+                    using (var machineKey = hklm.OpenSubKey(clsidKeyPath))
+                    {
+                        if (machineKey == null)
+                            continue;
+
+                        serverPath = ReadServerBinaryPath(machineKey);
+
+                        // Some in-process servers register the default value directly on the CLSID key.
+                        if (string.IsNullOrEmpty(serverPath))
+                        {
+                            serverPath = machineKey.GetValue(null) as string;
+                        }
+
+                        if (!string.IsNullOrEmpty(serverPath))
+                            break;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(serverPath))
+                {
+                    LogManager.Error($"No machine-wide server binary registered for {progId} ({clsid:B})");
+                    return false;
+                }
+
+                serverPath = Environment.ExpandEnvironmentVariables(serverPath.Trim().Trim('"'));
+                if (!Path.IsPathRooted(serverPath))
+                {
+                    LogManager.Error($"COM server path for {progId} is not rooted: {serverPath}");
+                    return false;
+                }
+
+                string normalizedServerPath = Path.GetFullPath(serverPath);
+                if (!IsUnderWindowsDirectory(normalizedServerPath))
+                {
+                    LogManager.Error($"COM server for {progId} resolves outside the Windows directory: {normalizedServerPath}");
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Fail-closed: an unverifiable registration is treated as untrusted.
+                LogManager.Error($"COM server registration validation failed for {progId}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static string ReadServerBinaryPath(Microsoft.Win32.RegistryKey clsidKey)
+        {
+            foreach (string subKeyName in new[] { "InprocServer32", "LocalServer32" })
+            {
+                using (var serverKey = clsidKey.OpenSubKey(subKeyName))
+                {
+                    if (serverKey == null)
+                        continue;
+
+                    string value = serverKey.GetValue(null) as string;
+                    if (!string.IsNullOrEmpty(value))
+                        return value;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsUnderWindowsDirectory(string normalizedPath)
+        {
+            string windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrEmpty(windowsFolder))
+                return false;
+
+            string normalizedWindows = Path.GetFullPath(windowsFolder).TrimEnd('\\');
+            return normalizedPath.StartsWith(normalizedWindows + '\\', StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Validate the CLSID of a COM object
         /// </summary>
         internal static bool ValidateComObjectClsid(object obj, Guid expectedClsid)
         {
@@ -152,9 +258,10 @@ namespace FirewallManager
                 Type objType = obj.GetType();
                 Guid objClsid = objType.GUID;
 
-                // 对于 System.__ComObject，GUID 可能是空的
-                // 这种情况下，因为我们已经通过 Type.GetTypeFromCLSID 验证了 CLSID，
-                // 所以认为 CLSID 验证通过
+                // Diagnostic only. Activator.CreateInstance(Type.GetTypeFromCLSID(...)) returns a
+                // transparent proxy (System.__ComObject) whose Type.GUID is Guid.Empty, so this
+                // method can never distinguish the real server from a substituted one.
+                // Server identity is established by ValidateComServerRegistration before activation.
                 if (objClsid == Guid.Empty)
                 {
                     return true;
@@ -176,7 +283,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证 COM 对象的 IID (通过 QueryInterface)
+        /// Validate the IID of a COM object (via QueryInterface)
         /// </summary>
         internal static bool ValidateComObjectIid(object obj, Guid expectedIid)
         {
@@ -244,8 +351,8 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 安全释放 COM 对象，异常仅记录日志不抛出
-        /// 统一实现，供 FirewallService 等模块复用
+        /// Safely release a COM object. Exceptions are only logged, never thrown.
+        /// Unified implementation, reused by modules such as FirewallService.
         /// </summary>
         internal static void ReleaseComObject(object obj)
         {
@@ -343,6 +450,14 @@ namespace FirewallManager
             out uint lpBytesReturned,
             IntPtr lpOverlapped);
 
+        /// <summary>
+        /// Returns the real (fully dereferenced) path of an existing file or directory.
+        /// Uses GetFinalPathNameByHandle so that symbolic links, junctions and mount points are
+        /// resolved to their target before any security decision is made. Returns null (fail-closed)
+        /// when the path does not exist or the handle cannot be opened.
+        /// </summary>
+        /// <param name="path">Input path</param>
+        /// <returns>Resolved path, or null when it cannot be verified</returns>
         internal static string GetRealPath(string path)
         {
             try
@@ -350,19 +465,22 @@ namespace FirewallManager
                 if (string.IsNullOrEmpty(path))
                     return null;
 
-                // 直接返回规范化路径，不尝试使用 GetFinalPathNameByHandle
-                // 因为该 API 在某些系统配置下可能会失败
                 string normalizedPath = Path.GetFullPath(path);
-                
-                // 验证路径存在
-                if (Directory.Exists(normalizedPath) || File.Exists(normalizedPath))
+
+                if (!Directory.Exists(normalizedPath) && !File.Exists(normalizedPath))
                 {
-                    return normalizedPath;
+                    LogManager.Warning($"Path does not exist: {normalizedPath}");
+                    return null;
                 }
-                
-                // 路径不存在，返回 null
-                LogManager.Warning($"Path does not exist: {normalizedPath}");
-                return null;
+
+                string resolvedPath = ResolveFinalPathByHandle(normalizedPath);
+                if (resolvedPath == null)
+                {
+                    LogManager.Warning($"Unable to resolve final path for '{normalizedPath}'");
+                    return null;
+                }
+
+                return resolvedPath;
             }
             catch (Exception ex)
             {
@@ -371,99 +489,143 @@ namespace FirewallManager
             }
         }
 
-        internal static bool HasReparsePoint(string path)
+        /// <summary>
+        /// Resolves the final path of an existing item by opening a handle and querying
+        /// GetFinalPathNameByHandle. Returns null on any failure (fail-closed).
+        /// </summary>
+        private static string ResolveFinalPathByHandle(string normalizedPath)
         {
+            bool isDirectory = Directory.Exists(normalizedPath);
+            uint flags = isDirectory ? Win32Native.FILE_FLAG_BACKUP_SEMANTICS : 0u;
+
+            IntPtr handle = Win32Native.CreateFile(
+                normalizedPath,
+                Win32Native.GENERIC_READ,
+                Win32Native.FILE_SHARE_READ | Win32Native.FILE_SHARE_WRITE | Win32Native.FILE_SHARE_DELETE,
+                IntPtr.Zero,
+                Win32Native.OPEN_EXISTING,
+                flags,
+                IntPtr.Zero);
+
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                return null;
+
             try
             {
-                if (string.IsNullOrEmpty(path))
-                    return false;
+                var buffer = new System.Text.StringBuilder(1024);
+                uint length = Win32Native.GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+                if (length == 0)
+                    return null;
 
-                string normalizedPath = Path.GetFullPath(path);
+                if (length >= buffer.Capacity)
+                {
+                    buffer = new System.Text.StringBuilder((int)length + 1);
+                    length = Win32Native.GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+                    if (length == 0)
+                        return null;
+                }
 
-                if (Directory.Exists(normalizedPath))
+                string result = buffer.ToString();
+
+                // Strip the \\?\ prefix (and convert \\?\UNC\ back to a UNC path).
+                if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
                 {
-                    var dirInfo = new DirectoryInfo(normalizedPath);
-                    if ((dirInfo.Attributes & FileAttributes.ReparsePoint) == 0)
-                        return false;
-                    return HasDangerousReparseTag(normalizedPath);
+                    result = @"\\" + result.Substring(8);
                 }
-                if (File.Exists(normalizedPath))
+                else if (result.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase))
                 {
-                    var fileInfo = new FileInfo(normalizedPath);
-                    if ((fileInfo.Attributes & FileAttributes.ReparsePoint) == 0)
-                        return false;
-                    return HasDangerousReparseTag(normalizedPath);
+                    // A volume mounted without a drive letter. Stripping the prefix would turn
+                    // "\\?\Volume{GUID}\x.exe" into an invalid relative-looking path, so keep it.
                 }
-                return false;
+                else if (result.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                {
+                    result = result.Substring(4);
+                }
+
+                return result;
             }
-            catch
+            finally
             {
-                return false;
+                Win32Native.CloseHandle(handle);
             }
         }
 
-        // IO_REPARSE_TAG_MOUNT_POINT 与 IO_REPARSE_TAG_JUNCTION 在 Windows 中共享同一值 0xA0000003
-        // 此处合并为单个常量以消除冗余
-        private const uint IO_REPARSE_TAG_SYMLINK = 0xA000000C;
-        private const uint IO_REPARSE_TAG_MOUNT_POINT_OR_JUNCTION = 0xA0000003;
-
-        private static bool HasDangerousReparseTag(string path)
+        /// <summary>
+        /// Determines whether an existing file or directory is a reparse point.
+        /// Any reparse point is treated as unsafe: symlinks, junctions and mount points redirect the
+        /// path outside the monitored location, and other tags (cloud placeholders, AppExecLink, …)
+        /// are not worth allow-listing in a security decision.
+        /// Fails closed: if the attributes cannot be read, the item is reported as a reparse point.
+        /// </summary>
+        /// <param name="path">Path to inspect</param>
+        /// <returns>true when the item is (or may be) a reparse point</returns>
+        internal static bool HasReparsePoint(string path)
         {
+            if (string.IsNullOrEmpty(path))
+                return false;
+
             try
             {
-                bool isDirectory = Directory.Exists(path);
-                
-                // 使用 CreateFile API 打开文件/目录，目录需要 FILE_FLAG_BACKUP_SEMANTICS
-                uint flags = isDirectory ? Win32Native.FILE_FLAG_BACKUP_SEMANTICS : 0u;
-                IntPtr handle = Win32Native.CreateFile(
-                    path,
-                    Win32Native.GENERIC_READ,
-                    Win32Native.FILE_SHARE_READ,
-                    IntPtr.Zero,
-                    Win32Native.OPEN_EXISTING,
-                    flags,
-                    IntPtr.Zero);
+                string normalizedPath = Path.GetFullPath(path);
 
-                if (handle == IntPtr.Zero || handle == new IntPtr(-1))
-                    return false;  // 无法打开，视为安全
-
-                try
+                FileAttributes attributes;
+                if (Directory.Exists(normalizedPath))
                 {
-                    byte[] reparseData = new byte[1024];
-                    uint bytesReturned;
-                    bool result = DeviceIoControl(
-                        handle,
-                        0x000900A8,  // FSCTL_GET_REPARSE_POINT
-                        IntPtr.Zero, 0,
-                        reparseData, (uint)reparseData.Length,
-                        out bytesReturned,
-                        IntPtr.Zero);
-
-                    if (result && bytesReturned >= 20)
-                    {
-                        uint reparseTag = BitConverter.ToUInt32(reparseData, 0);
-                        
-                        // 检查是否为危险的 reparse tag
-                        // symlink / mount point / junction 三类需要拦截
-                        if (reparseTag == IO_REPARSE_TAG_SYMLINK ||
-                            reparseTag == IO_REPARSE_TAG_MOUNT_POINT_OR_JUNCTION)
-                        {
-                            return true;  // 检测到危险的 reparse point
-                        }
-                    }
-
-                    // 没有检测到危险的 reparse point
+                    attributes = new DirectoryInfo(normalizedPath).Attributes;
+                }
+                else if (File.Exists(normalizedPath))
+                {
+                    attributes = new FileInfo(normalizedPath).Attributes;
+                }
+                else
+                {
+                    // Nothing to inspect; the caller checks existence separately.
                     return false;
                 }
-                finally
-                {
-                    Win32Native.CloseHandle(handle);
-                }
+
+                return (attributes & FileAttributes.ReparsePoint) != 0;
             }
             catch
             {
-                return false;  // 出错时默认为安全
+                // Fail-closed: an uninspectable path must not be treated as safe.
+                return true;
             }
+        }
+
+        /// <summary>
+        /// Rejects network (UNC) and device paths before any filesystem call is made.
+        /// Directory.Exists / File.Exists / new FileInfo / File.Open all initiate an SMB connection
+        /// when given a UNC path, which leaks the current user's NetNTLM credentials to an arbitrary
+        /// host. The check therefore has to run at every entry point, before the path is probed —
+        /// not only inside the path normalizer, where probing has already happened.
+        /// Extended local drive syntax (\\?\C:\...) stays local and is allowed.
+        /// </summary>
+        /// <param name="path">User-supplied or imported path</param>
+        /// <returns>true when the path cannot reach a remote host</returns>
+        internal static bool IsLocalPathCandidate(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            string candidate = path.Trim();
+
+            // Mixed separators are normalized by Windows: "\/server\share", "/\server\share" and
+            // "\//server\share" all resolve to a UNC path, so each of the first two characters is
+            // tested independently instead of comparing whole prefixes.
+            bool startsWithSeparatorPair =
+                (candidate[0] == '\\' || candidate[0] == '/') &&
+                candidate.Length > 1 &&
+                (candidate[1] == '\\' || candidate[1] == '/');
+
+            if (!startsWithSeparatorPair)
+            {
+                return true;
+            }
+
+            return candidate.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)
+                   && candidate.Length > 5
+                   && char.IsLetter(candidate[4])
+                   && candidate[5] == ':';
         }
 
         internal static bool HasReparsePointInPath(string path)
@@ -475,7 +637,7 @@ namespace FirewallManager
 
                 string normalizedPath = Path.GetFullPath(path);
 
-                // 对于系统目录，跳过父目录检查（这些目录可能包含正常的 junction）
+                // For system directories, skip parent-directory checks (they may contain normal junctions)
                 string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles).ToLowerInvariant();
                 string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86).ToLowerInvariant();
                 string systemFolder = Environment.GetFolderPath(Environment.SpecialFolder.System).ToLowerInvariant();
@@ -483,19 +645,21 @@ namespace FirewallManager
 
                 string normalizedLower = normalizedPath.ToLowerInvariant();
 
-                if (normalizedLower.StartsWith(programFiles) ||
-                    normalizedLower.StartsWith(programFilesX86) ||
-                    normalizedLower.StartsWith(systemFolder) ||
-                    normalizedLower.StartsWith(windowsFolder))
+                // Compare with a trailing separator so that a sibling directory whose name merely
+                // starts with the same characters (e.g. "C:\Program FilesEvil") is not whitelisted.
+                if (IsUnderFolder(normalizedLower, programFiles) ||
+                    IsUnderFolder(normalizedLower, programFilesX86) ||
+                    IsUnderFolder(normalizedLower, systemFolder) ||
+                    IsUnderFolder(normalizedLower, windowsFolder))
                 {
-                    // 系统目录：只检查路径本身
+                    // System directories: only check the path itself
                     return HasReparsePoint(normalizedPath);
                 }
 
-                // 非系统目录：检查完整路径链，包括所有父级
+                // Non-system directories: check the full path chain, including all parents
                 string currentPath = normalizedPath;
                 int depth = 0;
-                const int maxDepth = 10; // 防止循环引用
+                const int maxDepth = 10; // Prevent circular references
 
                 while (!string.IsNullOrEmpty(currentPath) && depth < maxDepth)
                 {
@@ -514,8 +678,19 @@ namespace FirewallManager
             }
             catch
             {
-                return false;
+                // Fail-closed: if the chain cannot be inspected, treat the path as unsafe.
+                return true;
             }
+        }
+
+        private static bool IsUnderFolder(string candidatePath, string folder)
+        {
+            if (string.IsNullOrEmpty(folder))
+                return false;
+
+            string normalizedFolder = folder.TrimEnd('\\');
+            return candidatePath.Equals(normalizedFolder, StringComparison.OrdinalIgnoreCase)
+                || candidatePath.StartsWith(normalizedFolder + '\\', StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool WaitForFileReady(string filePath, int maxRetries, int retryDelayMs)
@@ -560,36 +735,38 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 原子写入核心逻辑 - 先写临时文件再替换，防止写入中断导致文件损坏
-        /// 修复：使用排他创建+随机文件名+句柄级reparse校验+受限ACL，防止符号链接攻击
-        /// AtomicWriteAllText 与 AtomicWriteAllBytes 共用此实现，消除重复代码
+        /// Core logic for atomic write — write to a temp file first, then replace,
+        /// preventing file corruption caused by interrupted writes.
+        /// Hardening: exclusive creation + random file name + handle-level reparse validation + restricted ACL,
+        /// to defend against symlink attacks.
+        /// AtomicWriteAllText and AtomicWriteAllBytes share this implementation, eliminating duplicated code.
         /// </summary>
-        /// <param name="filePath">目标文件路径</param>
-        /// <param name="writeBytes">向临时文件写入字节数组的回调</param>
+        /// <param name="filePath">Target file path</param>
+        /// <param name="writeBytes">Callback that writes a byte array to the temp file</param>
         private static void AtomicWriteCore(string filePath, Action<FileStream> writeBytes)
         {
-            // 使用随机文件名防止符号链接预判攻击
+            // Use a random file name to prevent symlink pre-judgement attacks
             string tempPath = Path.Combine(Path.GetDirectoryName(filePath), Path.GetRandomFileName());
             try
             {
-                // 使用排他创建，确保临时文件是新建的，不存在符号链接
+                // Use exclusive creation to ensure the temp file is newly created, no symlink present
                 using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 {
-                    // 检查文件句柄的属性，确认不是reparse point
+                    // Check the file handle attributes, confirm it is not a reparse point
                     FileInfo tempFileInfo = new FileInfo(tempPath);
                     if ((tempFileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
                     {
-                        throw new InvalidOperationException("临时文件是reparse point，拒绝写入");
+                        throw new InvalidOperationException("Temporary file is a reparse point, rejecting write");
                     }
 
                     writeBytes(fs);
                     fs.Flush();
                 }
 
-                // 对临时文件设置受限ACL
+                // Apply a restricted ACL to the temp file
                 SetSecureFilePermissionsInternal(tempPath);
 
-                // 原子替换或移动
+                // Atomic replace or move
                 if (File.Exists(filePath))
                 {
                     File.Replace(tempPath, filePath, null);
@@ -599,7 +776,7 @@ namespace FirewallManager
                     File.Move(tempPath, filePath);
                 }
 
-                // 对目标文件也设置受限ACL
+                // Also apply a restricted ACL to the target file
                 SetSecureFilePermissionsInternal(filePath);
             }
             catch
@@ -617,8 +794,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 原子写入文本文件 - 先写临时文件再替换，防止写入中断导致文件损坏
-        /// 修复：使用排他创建+随机文件名+句柄级reparse校验+受限ACL，防止符号链接攻击
+        /// Atomically write a text file — write to a temp file first, then replace,
+        /// preventing file corruption caused by interrupted writes.
+        /// Hardening: exclusive creation + random file name + handle-level reparse validation + restricted ACL,
+        /// to defend against symlink attacks.
         /// </summary>
         internal static void AtomicWriteAllText(string filePath, string contents, System.Text.Encoding encoding)
         {
@@ -627,8 +806,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 原子写入字节数组 - 先写临时文件再替换，防止写入中断导致文件损坏
-        /// 修复：使用排他创建+随机文件名+句柄级reparse校验+受限ACL，防止符号链接攻击
+        /// Atomically write a byte array — write to a temp file first, then replace,
+        /// preventing file corruption caused by interrupted writes.
+        /// Hardening: exclusive creation + random file name + handle-level reparse validation + restricted ACL,
+        /// to defend against symlink attacks.
         /// </summary>
         internal static void AtomicWriteAllBytes(string filePath, byte[] bytes)
         {
@@ -636,8 +817,23 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 设置文件受限ACL权限（仅管理员和SYSTEM可访问）
-        /// 统一实现，供 Config/LogManager 等模块复用，消除三处重复代码
+        /// Removes every explicit (non-inherited) access rule from the security descriptor.
+        /// Used before hardening a file or directory so that ACEs planted by an attacker before the
+        /// protection was applied cannot survive alongside our own rules.
+        /// </summary>
+        private static void RemoveExplicitAccessRules(System.Security.AccessControl.FileSystemSecurity security)
+        {
+            foreach (System.Security.AccessControl.FileSystemAccessRule rule in
+                     security.GetAccessRules(true, false, typeof(System.Security.Principal.SecurityIdentifier)))
+            {
+                security.RemoveAccessRule(rule);
+            }
+        }
+
+        /// <summary>
+        /// Apply a restricted ACL to a file (only Administrators and SYSTEM can access it).
+        /// Unified implementation, reused by modules such as Config/LogManager, eliminating
+        /// three duplicate code sites.
         /// </summary>
         internal static void SetSecureFilePermissionsInternal(string filePath)
         {
@@ -649,6 +845,10 @@ namespace FirewallManager
                 var fileInfo = new FileInfo(filePath);
                 System.Security.AccessControl.FileSecurity fileSecurity = fileInfo.GetAccessControl();
                 fileSecurity.SetAccessRuleProtection(true, false);
+
+                // SetAccessRuleProtection(false) only drops inherited entries. Explicit entries that
+                // an attacker planted before the file was created would survive, so clear them all.
+                RemoveExplicitAccessRules(fileSecurity);
 
                 System.Security.Principal.SecurityIdentifier adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
                 System.Security.AccessControl.FileSystemAccessRule adminRule = new System.Security.AccessControl.FileSystemAccessRule(
@@ -665,207 +865,155 @@ namespace FirewallManager
                 fileSecurity.AddAccessRule(systemRule);
 
                 fileInfo.SetAccessControl(fileSecurity);
+
+                // The owner of an object implicitly holds READ_CONTROL and WRITE_DAC regardless of the
+                // DACL, so a file owned by the current user could be re-opened by any non-elevated
+                // process of that user even after the ACL above. Reassign the owner to Administrators.
+                try
+                {
+                    System.Security.AccessControl.FileSecurity ownerSecurity = fileInfo.GetAccessControl();
+                    ownerSecurity.SetOwner(adminSid);
+                    fileInfo.SetAccessControl(ownerSecurity);
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warning($"Failed to set owner of '{filePath}': {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
-                // ACL设置失败不应影响主要功能，仅记录日志
+                // ACL-setting failure should not break main functionality; just log it
                 LogManager.Warning(LangManager.GetText("logMessages.setFilePermissionsFailed", ex.Message));
             }
         }
 
-        internal static bool IsFilePathTrusted(string filePath)
+        /// <summary>
+        /// Apply a restricted ACL to a directory (Administrators/SYSTEM full control, current user
+        /// read-only). Protecting the containing directory is what makes the per-file ACLs effective:
+        /// on Windows, a user holding FILE_DELETE_CHILD on the parent directory can delete a child file
+        /// regardless of that file's own ACL, so hardening files alone does not prevent replacement.
+        /// </summary>
+        /// <param name="directoryPath">Directory to harden</param>
+        internal static bool SetSecureDirectoryPermissionsInternal(string directoryPath)
         {
             try
             {
-                if (string.IsNullOrEmpty(filePath))
+                if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath))
                     return false;
 
-                if (!File.Exists(filePath))
-                    return false;
+                var dirInfo = new DirectoryInfo(directoryPath);
+                System.Security.AccessControl.DirectorySecurity dirSecurity = dirInfo.GetAccessControl();
+                dirSecurity.SetAccessRuleProtection(true, false);
 
-                string normalizedPath = Path.GetFullPath(filePath).ToLowerInvariant();
+                // Explicit ACEs planted before we hardened the directory would survive
+                // SetAccessRuleProtection(false), so clear them before granting our own.
+                RemoveExplicitAccessRules(dirSecurity);
 
-                string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles).ToLowerInvariant();
-                string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86).ToLowerInvariant();
-                string systemFolder = Environment.GetFolderPath(Environment.SpecialFolder.System).ToLowerInvariant();
-                string windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows).ToLowerInvariant();
+                System.Security.Principal.SecurityIdentifier adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                dirSecurity.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                    adminSid,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow));
 
-                if ((normalizedPath.StartsWith(programFiles + '\\') || normalizedPath == programFiles) ||
-                    (normalizedPath.StartsWith(programFilesX86 + '\\') || normalizedPath == programFilesX86) ||
-                    (normalizedPath.StartsWith(systemFolder + '\\') || normalizedPath == systemFolder) ||
-                    (normalizedPath.StartsWith(windowsFolder + '\\') || normalizedPath == windowsFolder))
+                System.Security.Principal.SecurityIdentifier systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                dirSecurity.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                    systemSid,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow));
+
+                // Keep the current user able to read (log viewer, language files) but not to
+                // write, delete or replace the protected files.
+                System.Security.Principal.SecurityIdentifier currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User;
+                if (currentUserSid != null)
                 {
-                    return true;
+                    dirSecurity.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                        currentUserSid,
+                        System.Security.AccessControl.FileSystemRights.ReadAndExecute,
+                        System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                        System.Security.AccessControl.PropagationFlags.None,
+                        System.Security.AccessControl.AccessControlType.Allow));
                 }
 
-                return IsFileDigitallySigned(filePath);
-            }
-            catch
-            {
-                return false;
-            }
-        }
+                dirInfo.SetAccessControl(dirSecurity);
 
-        private static bool IsFileDigitallySigned(string filePath)
-        {
-            try
-            {
-                // 首先使用 WinVerifyTrust 验证签名完整性（最重要的一步）
-                if (!VerifyFileSignatureIntegrity(filePath))
+                // The owner of a directory implicitly holds READ_CONTROL and WRITE_DAC regardless of
+                // the DACL. Because this directory lives under the user profile it is normally owned
+                // by the current user, which would let a non-elevated process re-grant itself write
+                // access. Reassign the owner to Administrators.
+                try
                 {
-                    return false;
+                    System.Security.AccessControl.DirectorySecurity ownerSecurity = dirInfo.GetAccessControl();
+                    ownerSecurity.SetOwner(adminSid);
+                    dirInfo.SetAccessControl(ownerSecurity);
                 }
-
-                // 然后验证证书链有效性
-#pragma warning disable SYSLIB0057
-                using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
-#pragma warning restore SYSLIB0057
-                if (cert == null || string.IsNullOrEmpty(cert.Subject))
+                catch (Exception ex)
                 {
-                    return false;
-                }
-
-                if (cert.NotAfter < DateTime.Now || cert.NotBefore > DateTime.Now)
-                {
-                    return false;
-                }
-
-                bool isValid = VerifyCertificateChain(cert);
-                if (!isValid)
-                {
+                    // The owner implicitly holds WRITE_DAC, so a directory that stays owned by the
+                    // current user can be re-opened for writing by a non-elevated process, which
+                    // would defeat every integrity gate that depends on this directory.
+                    LogManager.Error($"Failed to reassign owner of '{directoryPath}' to Administrators: {ex.Message}. Treating the directory as unprotected.");
                     return false;
                 }
 
                 return true;
             }
+            catch (Exception ex)
+            {
+                // A non-elevated start cannot change the directory ACL; log and report the failure so
+                // that the caller can refuse trust-sensitive operations instead of degrading silently.
+                LogManager.Warning($"Failed to apply directory ACL to '{directoryPath}': {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns true when the executable belongs to Windows itself, in which case blocking its
+        /// outbound traffic would destabilize the operating system. Used to decide whether a newly
+        /// detected executable should be skipped.
+        /// </summary>
+        /// <param name="filePath">Executable path</param>
+        /// <returns>true when the file is a critical system executable</returns>
+        internal static bool IsCriticalSystemExecutable(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return false;
+
+            try
+            {
+                string normalizedPath = Path.GetFullPath(filePath);
+
+                string windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                if (string.IsNullOrEmpty(windowsFolder))
+                    return false;
+
+                bool insideWindows = IsUnderFolder(normalizedPath, windowsFolder);
+
+                // A name-only match is not a system executable. Any unprivileged user can drop a
+                // binary called "svchost.exe" into a writable folder, so honouring the name list
+                // outside the Windows directory would be a free pass out of the blocker.
+                string fileName = Path.GetFileName(normalizedPath);
+                if (!insideWindows && !string.IsNullOrEmpty(fileName) && Config.CRITICAL_PROGRAMS.Contains(fileName))
+                {
+                    LogManager.Warning($"Executable named like a system process outside the Windows directory: {normalizedPath}");
+                }
+
+                return insideWindows;
+            }
             catch
             {
-                return false;
+                // Fail-safe: an unverifiable path is skipped rather than blocked.
+                return true;
             }
         }
 
         /// <summary>
-        /// 使用 WinVerifyTrust API 验证文件签名完整性
-        /// 确保文件内容与数字签名匹配，防止篡改攻击
+        /// Validate that a COM object type matches the expected CLSID.
+        /// Uses CLSID validation rather than ProgID to prevent ProgID hijacking attacks.
         /// </summary>
-        private static bool VerifyFileSignatureIntegrity(string filePath)
-        {
-            try
-            {
-                IntPtr filePathPtr = Marshal.StringToCoTaskMemUni(filePath);
-                try
-                {
-                    Win32Native.WINTRUST_FILE_INFO fileInfo = new Win32Native.WINTRUST_FILE_INFO
-                    {
-                        cbStruct = (uint)Marshal.SizeOf(typeof(Win32Native.WINTRUST_FILE_INFO)),
-                        pcwszFilePath = filePathPtr,
-                        hFile = IntPtr.Zero,
-                        pgKnownSubject = IntPtr.Zero
-                    };
-
-                    IntPtr fileInfoPtr = Marshal.AllocCoTaskMem((int)fileInfo.cbStruct);
-                    try
-                    {
-                        Marshal.StructureToPtr(fileInfo, fileInfoPtr, false);
-
-                        Win32Native.WINTRUST_DATA trustData = new Win32Native.WINTRUST_DATA
-                        {
-                            cbStruct = (uint)Marshal.SizeOf(typeof(Win32Native.WINTRUST_DATA)),
-                            pPolicyCallbackData = IntPtr.Zero,
-                            pSIPClientData = IntPtr.Zero,
-                            dwUIChoice = 2, // WTD_UI_NONE - 无UI
-                            fdwRevocationChecks = 0, // 不进行吊销检查（由 VerifyCertificateChain 处理）
-                            dwUnionChoice = 1, // WTD_CHOICE_FILE
-                            pFile = fileInfoPtr,
-                            dwStateAction = 0, // WTD_STATEACTION_VERIFY
-                            hWVTStateData = IntPtr.Zero,
-                            pwszURLReference = null,
-                            dwProvFlags = 0x20000, // WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
-                            dwUIContext = 0,
-                            pSignatureSettings = IntPtr.Zero
-                        };
-
-                        IntPtr actionId = Marshal.AllocCoTaskMem(16);
-                        try
-                        {
-                            Guid actionGuid = new Guid("{00AAC56B-CD44-11d0-8CC2-00C04FC295EE}");
-                            Marshal.StructureToPtr(actionGuid, actionId, false);
-
-                            uint result = Win32Native.WinVerifyTrust(IntPtr.Zero, actionId, ref trustData);
-                            return result == 0; // ERROR_SUCCESS
-                        }
-                        finally
-                        {
-                            Marshal.FreeCoTaskMem(actionId);
-                        }
-                    }
-                    finally
-                    {
-                        Marshal.FreeCoTaskMem(fileInfoPtr);
-                    }
-                }
-                finally
-                {
-                    Marshal.FreeCoTaskMem(filePathPtr);
-                }
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warning(LangManager.GetText("logMessages.signatureIntegrityCheckFailed", ex.Message));
-                return false;
-            }
-        }
-
-        private static bool VerifyCertificateChain(X509Certificate2 cert)
-        {
-            try
-            {
-                using var onlineChain = new X509Chain();
-                onlineChain.ChainPolicy.RevocationMode = X509RevocationMode.Online;
-                onlineChain.ChainPolicy.RevocationFlag = X509RevocationFlag.EntireChain;
-                onlineChain.ChainPolicy.VerificationTime = DateTime.Now;
-                onlineChain.ChainPolicy.UrlRetrievalTimeout = new TimeSpan(0, 0, 5);
-                
-                bool isValid = onlineChain.Build(cert);
-                if (isValid)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warning(LangManager.GetText("logMessages.certificateOnlineRevocationCheckFailed", ex.Message));
-            }
-
-            try
-            {
-                using var offlineChain = new X509Chain();
-                offlineChain.ChainPolicy.RevocationMode = X509RevocationMode.Offline;
-                offlineChain.ChainPolicy.RevocationFlag = X509RevocationFlag.EntireChain;
-                offlineChain.ChainPolicy.VerificationTime = DateTime.Now;
-                
-                bool isValid = offlineChain.Build(cert);
-                if (isValid)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warning(LangManager.GetText("logMessages.certificateOfflineRevocationCheckFailed", ex.Message));
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// 验证 COM 对象类型是否匹配预期 CLSID
-        /// 使用 CLSID 验证而非 ProgID，防止 ProgID 劫持攻击
-        /// </summary>
-        /// <param name="obj">COM 对象</param>
-        /// <param name="expectedClsid">预期的 CLSID（如 "{14C4B0D1-04A3-4666-A29C-3E8B50E9E955}"）</param>
-        /// <param name="expectedIid">预期的 IID（如 "{2C5BC43E-3369-4C33-AB0C-BE9469677AF4}"）</param>
-        /// <returns>是否匹配</returns>
+        /// <param name="obj">COM object</param>
+        /// <param name="expectedClsid">Expected CLSID (e.g. "{14C4B0D1-04A3-4666-A29C-3E8B50E9E955}")</param>
+        /// <param name="expectedIid">Expected IID (e.g. "{2C5BC43E-3369-4C33-AB0C-BE9469677AF4}")</param>
+        /// <returns>Whether it matches</returns>
         internal static bool ValidateComObjectType(object obj, string expectedClsid, string expectedIid)
         {
             try
@@ -888,7 +1036,10 @@ namespace FirewallManager
                 Type objType = obj.GetType();
                 Guid objClsid = objType.GUID;
 
-                if (objClsid != expectedClsidGuid)
+                // Late-bound COM objects returned by Rules.Item(name) are transparent proxies
+                // (System.__ComObject) whose Type.GUID is Guid.Empty. Treat that as "unknown" and
+                // rely on the QueryInterface check below instead of rejecting every rule.
+                if (objClsid != Guid.Empty && objClsid != expectedClsidGuid)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.comObjectClsidMismatch", objClsid, expectedClsidGuid));
                     return false;

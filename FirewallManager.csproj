@@ -28,13 +28,6 @@
     <Content Include="Lang\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Remove="FirewallManager.Tests\**\*" />
-    <Content Remove="FirewallManager.Tests\**\*" />
-    <EmbeddedResource Remove="FirewallManager.Tests\**\*" />
-    <None Remove="FirewallManager.Tests\**\*" />
-  </ItemGroup>
-
   <!-- 排除备份目录、发布产物目录，避免被 SDK 自动包含编译 -->
   <ItemGroup>
     <Compile Remove="backup-pre-refactor\**\*" />

@@ -10,39 +10,39 @@ using System.Threading.Tasks;
 namespace FirewallManager
 {
     /// <summary>
-    /// 防火墙服务类
-    /// 负责处理与防火墙相关的操作
+    /// Firewall service class
+    /// Handles firewall-related operations
     /// </summary>
     public class FirewallService : IFirewallService
     {
         /// <summary>
-        /// 防火墙策略对象（使用 object 存储以支持 volatile，提供 dynamic 访问）
+        /// Firewall policy object (stored as object to support volatile, accessed via dynamic)
         /// </summary>
         private volatile object _firewallPolicy;
 
         /// <summary>
-        /// 已添加的规则列表（用于有序遍历和持久化）
+        /// List of added rules (used for ordered traversal and persistence)
         /// </summary>
         private List<string> addedRules;
 
         /// <summary>
-        /// 已添加规则的 HashSet 集合（用于 O(1) 快速查找）
-        /// 与 addedRules 保持同步，避免 CheckRuleExists 在大规则集下退化为 O(n)
+        /// HashSet of added rules (for O(1) fast lookup)
+        /// Kept in sync with addedRules to prevent CheckRuleExists from degrading to O(n) on large rule sets
         /// </summary>
         private HashSet<string> addedRulesLookup;
 
         /// <summary>
-        /// 用于确保线程安全的锁对象
+        /// Lock object for ensuring thread safety
         /// </summary>
         private readonly object addedRulesLock;
 
         /// <summary>
-        /// 资源释放标志（线程安全）
+        /// Resource disposal flag (thread-safe)
         /// </summary>
         private volatile bool _disposed;
 
         /// <summary>
-        /// 获取 firewallPolicy 的 dynamic 视图（线程安全读取 _firewallPolicy）
+        /// Gets a dynamic view of firewallPolicy (thread-safe read of _firewallPolicy)
         /// </summary>
         private dynamic firewallPolicy
         {
@@ -51,7 +51,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 构造函数
+        /// Constructor
         /// </summary>
         public FirewallService()
         {
@@ -71,13 +71,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 创建防火墙规则 COM 对象并添加到防火墙策略与本地列表
-        /// 抽取自 CreateRuleForExe 与 UpdateFirewallRules，消除重复的属性设置/添加/释放逻辑
+        /// Creates a firewall rule COM object and adds it to both the firewall policy and the local list
+        /// Extracted from CreateRuleForExe and UpdateFirewallRules to eliminate duplicated property-setting/addition/release logic
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <param name="exePath">可执行文件路径</param>
-        /// <param name="descriptionPrefix">描述前缀（区分自动监控与手动更新）</param>
-        /// <returns>是否创建并添加成功</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <param name="exePath">Executable file path</param>
+        /// <param name="descriptionPrefix">Description prefix (distinguishes auto-monitoring from manual update)</param>
+        /// <returns>Whether creation and addition succeeded</returns>
         private bool CreateAndAddFirewallRule(string ruleName, string exePath, string descriptionPrefix)
         {
             dynamic newRule = ComHelper.CreateComObjectWithClsid(
@@ -92,17 +92,69 @@ namespace FirewallManager
 
             try
             {
-                SafeSetProperty(newRule, "Name", ruleName);
+                // Every property that defines the security semantics of the rule must be applied.
+                // A partially configured rule would otherwise be stored as "block everything" (no
+                // ApplicationName) or as a disabled/inbound rule that silently lets the target through.
+                bool applied =
+                    SafeSetProperty(newRule, "Name", ruleName) &&
+                    SafeSetProperty(newRule, "ApplicationName", exePath) &&
+                    SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound) &&
+                    SafeSetProperty(newRule, "Action", (int)FirewallAction.Block) &&
+                    SafeSetProperty(newRule, "Enabled", true) &&
+                    SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
+
+                if (!applied)
+                {
+                    LogManager.Error($"Failed to set mandatory properties on rule '{ruleName}' for '{exePath}'; rule not created.");
+                    return false;
+                }
+
+                // Description is informative only; do not discard the rule when it cannot be written.
                 SafeSetProperty(newRule, "Description", descriptionPrefix + ": " + exePath);
-                SafeSetProperty(newRule, "ApplicationName", exePath);
-                SafeSetProperty(newRule, "Direction", (int)FirewallDirection.Outbound);
-                SafeSetProperty(newRule, "Action", (int)FirewallAction.Block);
-                SafeSetProperty(newRule, "Enabled", true);
-                SafeSetProperty(newRule, "Profiles", Config.ALL_FIREWALL_PROFILES);
 
                 firewallPolicy.Rules.Add(newRule);
 
-                // 添加到本地列表（HashSet 与 List 保持同步）
+                // Verify that the stored rule really targets this executable. If ApplicationName was
+                // dropped or rewritten the rule would apply machine-wide, so roll it back instead.
+                // The value is read back from the policy store, not from newRule: querying the instance
+                // we just configured would only echo our own writes and could not detect a lost property.
+                string appliedApplication = string.Empty;
+                object storedRule = null;
+                try
+                {
+                    storedRule = firewallPolicy.Rules.Item(ruleName);
+                    if (storedRule != null)
+                    {
+                        appliedApplication = ComHelper.SafeGetProperty<string>(storedRule, "ApplicationName", string.Empty);
+                    }
+                }
+                catch (Exception readEx)
+                {
+                    LogManager.Warning($"Failed to read back rule '{ruleName}' from the policy store: {readEx.Message}");
+                }
+                finally
+                {
+                    if (storedRule != null)
+                    {
+                        ReleaseComObject(storedRule);
+                    }
+                }
+
+                if (!string.Equals(appliedApplication, exePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    LogManager.Error($"Rule '{ruleName}' does not target '{exePath}' (stored value: '{appliedApplication}'). Rolling back.");
+                    try
+                    {
+                        firewallPolicy.Rules.Remove(ruleName);
+                    }
+                    catch (Exception removeEx)
+                    {
+                        LogManager.Warning($"Rollback of rule '{ruleName}' failed: {removeEx.Message}");
+                    }
+                    return false;
+                }
+
+                // Add to local list (HashSet and List stay synchronized)
                 lock (addedRulesLock)
                 {
                     if (addedRulesLookup.Add(ruleName))
@@ -120,7 +172,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 释放资源
+        /// Release resources
         /// </summary>
         public void Dispose()
         {
@@ -129,13 +181,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 释放资源
-        /// 释放托管资源和COM对象
+        /// Release resources
+        /// Releases managed resources and COM objects
         /// </summary>
-        /// <param name="disposing">是否释放托管资源</param>
+        /// <param name="disposing">Whether to release managed resources</param>
         protected virtual void Dispose(bool disposing)
         {
-            // 使用 volatile 字段 + 锁定确保线程安全
+            // Use volatile field + lock to ensure thread safety
             if (_disposed)
             {
                 return;
@@ -150,14 +202,14 @@ namespace FirewallManager
 
                 if (disposing)
                 {
-                    // 释放托管资源
+                    // Release managed resources
                     if (addedRules != null)
                     {
                         addedRules.Clear();
                     }
                     addedRulesLookup?.Clear();
 
-                    // 释放COM对象（只在显式Dispose时释放，避免在析构函数中访问托管资源）
+                    // Release COM object (only on explicit Dispose to avoid accessing managed resources in finalizer)
                     if (_firewallPolicy != null)
                     {
                         try
@@ -174,8 +226,8 @@ namespace FirewallManager
                 }
                 else
                 {
-                    // 从析构函数调用时，只释放非托管资源（COM对象）
-                    // 注意：此时不能访问托管资源（如 LogManager），因为它们可能已被 GC 回收
+                    // When called from finalizer, only release unmanaged resources (COM object)
+                    // Note: Must not access managed resources (e.g. LogManager) here as they may have been collected by GC
                     if (_firewallPolicy != null)
                     {
                         try
@@ -185,8 +237,8 @@ namespace FirewallManager
                         }
                         catch
                         {
-                            // 在析构函数中不能记录日志，因为 LogManager 可能已被回收
-                            // 静默忽略异常
+                            // Cannot log in finalizer since LogManager may have been collected
+                            // Silently ignore exceptions
                         }
                     }
                 }
@@ -196,7 +248,7 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 析构函数
+        /// Finalizer
         /// </summary>
         ~FirewallService()
         {
@@ -204,10 +256,10 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 初始化防火墙组件
-        /// 创建COM对象并测试防火墙策略接口，同步本地规则列表
+        /// Initialize firewall components
+        /// Create COM object and test firewall policy interface, then sync local rule list
         /// </summary>
-        /// <returns>是否初始化成功</returns>
+        /// <returns>Whether initialization succeeded</returns>
         public bool InitializeFirewallComponents()
         {
             try
@@ -228,7 +280,7 @@ namespace FirewallManager
 
                 LogManager.Info(LangManager.GetText("logMessages.firewallPolicyInstanceCreated"));
 
-                // 测试获取 CurrentProfileTypes 属性
+                // Test getting CurrentProfileTypes property
                 try
                 {
                     var currentProfileTypes = firewallPolicy.CurrentProfileTypes;
@@ -239,7 +291,7 @@ namespace FirewallManager
                     LogManager.Error(LangManager.GetText("logMessages.gettingCurrentProfileTypesFailed", ex.Message));
                 }
 
-                // 测试获取 Rules 属性
+                // Test getting Rules property
                 try
                 {
                     var rules = firewallPolicy.Rules;
@@ -250,7 +302,7 @@ namespace FirewallManager
                     LogManager.Error(LangManager.GetText("logMessages.gettingRulesPropertyFailed", ex.Message));
                 }
 
-                // 同步本地规则列表与实际防火墙规则
+                // Sync local rule list with actual firewall rules
                 SyncRulesList();
 
                 LogManager.Info(LangManager.GetText("logMessages.firewallInitialized"));
@@ -265,13 +317,13 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 同步本地规则列表与实际防火墙规则
+        /// Sync local rule list with actual firewall rules
         /// </summary>
         public void SyncRulesList()
         {
             try
             {
-                // 检查防火墙策略是否已初始化
+                // Check if firewall policy is initialized
                 if (firewallPolicy == null)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
@@ -281,7 +333,7 @@ namespace FirewallManager
                 var rules = firewallPolicy.Rules;
                 var currentRules = new List<string>();
 
-                // 收集所有规则名称
+                // Collect all rule names
                 foreach (var rule in rules)
                 {
                     try
@@ -299,7 +351,7 @@ namespace FirewallManager
                     }
                 }
 
-                // 更新本地规则列表
+                // Update local rule list
                 lock (addedRulesLock)
                 {
                     addedRules.Clear();
@@ -316,11 +368,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 检查防火墙规则是否存在
-        /// 使用 HashSet 实现 O(1) 查找，避免大规则集下的性能退化
+        /// Check if a firewall rule exists
+        /// Uses HashSet for O(1) lookup, avoiding performance degradation on large rule sets
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <returns>是否存在</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <returns>Whether it exists</returns>
         public bool CheckRuleExists(string ruleName)
         {
             try
@@ -338,47 +390,47 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 为可执行文件创建防火墙规则
-        /// 检查白名单和系统关键程序后，创建出站阻止规则
+        /// Create a firewall rule for an executable file
+        /// Creates an outbound block rule after checking the whitelist and critical system programs
         /// </summary>
-        /// <param name="exePath">可执行文件路径</param>
-        /// <returns>是否创建成功</returns>
+        /// <param name="exePath">Executable file path</param>
+        /// <returns>Whether creation succeeded</returns>
         public bool CreateRuleForExe(string exePath)
         {
             try
             {
-                // 检查对象是否已释放
+                // Check if the object has been disposed
                 if (_disposed)
                 {
                     throw new ObjectDisposedException(nameof(FirewallService));
                 }
 
-                // 检查防火墙策略是否已初始化
+                // Check if firewall policy is initialized
                 if (firewallPolicy == null)
                 {
                     LogManager.Error(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
                     throw new InvalidOperationException(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
                 }
 
-                // 检查应用程序是否在白名单中
+                // Check if application is in whitelist
                 if (WhitelistForm.IsInWhitelist(exePath))
                 {
                     LogManager.Info(LangManager.GetText("logMessages.appInWhitelistSkipped", exePath));
                     return false;
                 }
 
-                // 检查是否为系统关键程序
-                string fullFileName = System.IO.Path.GetFileName(exePath);
-                if (Config.CRITICAL_PROGRAMS.Contains(fullFileName))
+                // Skip only Windows' own executables. A name-only match is not enough: a binary
+                // called "svchost.exe" dropped in a writable folder must still be blocked.
+                if (ComHelper.IsCriticalSystemExecutable(exePath))
                 {
-                    LogManager.Warning(LangManager.GetText("logMessages.skipCriticalProgram", exePath));
+                    LogManager.Warning($"Skipping critical system executable: {exePath}");
                     return false;
                 }
 
-                // 生成规则名称（统一调用 RuleNamingService）
+                // Generate rule name (consistently delegates to RuleNamingService)
                 string ruleName = RuleNamingService.BuildRuleName(exePath);
 
-                // 检查规则是否已存在
+                // Check if rule already exists
                 if (!CheckRuleExists(ruleName))
                 {
                     if (CreateAndAddFirewallRule(ruleName, exePath, LangManager.GetText("firewall.ruleDescriptionAuto")))
@@ -398,11 +450,11 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 清除所有由本程序创建的防火墙规则
-        /// 删除本地列表中的规则，并扫描防火墙中所有以Block_前缀开头的规则进行删除
-        /// 修复：添加规则名格式校验，防止误删其他软件创建的规则
+        /// Clear all firewall rules created by this program
+        /// Deletes rules from local list, then scans all Block_-prefixed rules in the firewall for removal
+        /// Fix: added rule name format validation to prevent accidentally deleting rules created by other software
         /// </summary>
-        /// <returns>删除的规则数量</returns>
+        /// <returns>Number of deleted rules</returns>
         public int ClearAllRules()
         {
             int deletedCount = 0;
@@ -412,49 +464,42 @@ namespace FirewallManager
             {
                 LogManager.Info(LangManager.GetText("logMessages.clearingAllRules"));
 
-                // 检查防火墙策略是否已初始化
+                // Check if firewall policy is initialized
                 if (firewallPolicy == null)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
                     return deletedCount;
                 }
 
-                // 1. 首先删除本地列表中的规则（这些是由本程序创建的，已验证）
-                List<string> rulesToProcess;
-                lock (addedRulesLock)
-                {
-                    rulesToProcess = addedRules.ToList();
-                }
-
-                foreach (var ruleName in rulesToProcess)
-                {
-                    try
-                    {
-                        firewallPolicy.Rules.Remove(ruleName);
-                        rulesToDelete.Add(ruleName);
-                        deletedCount++;
-                        LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
-                    }
-                    catch (Exception ex)
-                    {
-                        LogManager.Warning(LangManager.GetText("logMessages.deleteRuleFailed", ruleName, ex.Message));
-                    }
-                }
-
-                // 2. 然后扫描防火墙中的所有规则，只删除符合本程序创建格式的规则
+                // Delete rules only when this program can prove it created them. The local
+                // addedRules list is not proof: SyncRulesList fills it with every rule that merely
+                // carries the Block_ prefix, so deleting by that list would let any Block_-prefixed
+                // rule belonging to another product be removed. Ownership is verified per rule against
+                // its own ApplicationName below.
                 try
                 {
                     var rules = firewallPolicy.Rules;
-                    var allRuleNames = new List<string>();
+                    var candidates = new List<(string Name, string ApplicationName)>();
 
-                    // 收集所有规则名称
+                    // Collect rule names together with their ApplicationName so ownership can be proven
                     foreach (var rule in rules)
                     {
                         try
                         {
                             dynamic fwRule = rule;
                             string ruleName = fwRule.Name;
-                            allRuleNames.Add(ruleName);
+
+                            string applicationName = null;
+                            try
+                            {
+                                applicationName = fwRule.ApplicationName;
+                            }
+                            catch (Exception ex)
+                            {
+                                LogManager.Warning($"Failed to read ApplicationName for rule '{ruleName}': {ex.Message}");
+                            }
+
+                            candidates.Add((ruleName, applicationName));
                         }
                         catch (Exception ex)
                         {
@@ -462,23 +507,31 @@ namespace FirewallManager
                         }
                     }
 
-                    // 只删除符合本程序创建格式的规则
-                    foreach (var ruleName in allRuleNames)
+                    // Only delete rules whose embedded path hash matches their own ApplicationName
+                    foreach (var (ruleName, applicationName) in candidates)
                     {
-                        // 验证规则名确实是由本程序创建的（格式校验）
-                        if (RuleNamingService.IsRuleCreatedByUs(ruleName) && !rulesToDelete.Contains(ruleName))
+                        if (rulesToDelete.Contains(ruleName))
+                            continue;
+
+                        if (!RuleNamingService.IsRuleOwnedByUs(ruleName, applicationName))
                         {
-                            try
+                            if (RuleNamingService.IsRuleCreatedByUs(ruleName))
                             {
-                                firewallPolicy.Rules.Remove(ruleName);
-                                rulesToDelete.Add(ruleName);
-                                deletedCount++;
-                                LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
+                                LogManager.Warning($"Ignoring rule that merely matches the naming pattern but is not owned by this program: {ruleName}");
                             }
-                            catch (Exception ex)
-                            {
-                                LogManager.Warning(LangManager.GetText("logMessages.deleteRuleFailed", ruleName, ex.Message));
-                            }
+                            continue;
+                        }
+
+                        try
+                        {
+                            firewallPolicy.Rules.Remove(ruleName);
+                            rulesToDelete.Add(ruleName);
+                            deletedCount++;
+                            LogManager.Info(LangManager.GetText("logMessages.deleteFirewallRule", ruleName));
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Warning(LangManager.GetText("logMessages.deleteRuleFailed", ruleName, ex.Message));
                         }
                     }
                 }
@@ -487,12 +540,9 @@ namespace FirewallManager
                     LogManager.Error(LangManager.GetText("logMessages.scanFirewallRulesFailed"), ex);
                 }
 
-                // 清空本地规则列表
-                lock (addedRulesLock)
-                {
-                    addedRules.Clear();
-                    addedRulesLookup.Clear();
-                }
+                // Re-synchronize the local list with the real firewall state instead of assuming all
+                // deletions succeeded: rules that could not be removed must stay visible and deletable.
+                SyncRulesList();
 
                 LogManager.Info(LangManager.GetText("logMessages.clearRulesSuccess", deletedCount));
             }
@@ -505,26 +555,34 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 验证规则名称是否有效
-        /// 规则名称不能为空且长度不超过 256 字符，防止注入攻击
+        /// Validate whether a rule name is valid
+        /// Rule name must not be empty and must not exceed 256 characters, to prevent injection attacks
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <returns>是否有效</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <returns>Whether it is valid</returns>
         private static bool IsValidRuleName(string ruleName)
             => !string.IsNullOrEmpty(ruleName) && ruleName.Length <= 256;
 
         /// <summary>
-        /// 删除防火墙规则
+        /// Delete a firewall rule
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <returns>是否删除成功</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <returns>Whether deletion succeeded</returns>
         public bool DeleteRule(string ruleName)
         {
             try
             {
-                // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
+                // Validate rule name to prevent injection attacks (kept consistent with GetRuleDetails)
                 if (!IsValidRuleName(ruleName))
                 {
+                    return false;
+                }
+
+                // Prove ownership before removing: recompute the rule name from the rule's own
+                // ApplicationName. A rule that merely shares our naming pattern is left untouched.
+                if (!IsRuleOwnedByCurrentProgram(ruleName))
+                {
+                    LogManager.Warning($"Refusing to delete rule that is not owned by this program: {ruleName}");
                     return false;
                 }
 
@@ -547,9 +605,58 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 获取所有由本程序创建的规则名称
+        /// Looks the rule up in the live firewall policy and confirms that the name matches the one
+        /// this program derives from the rule's ApplicationName.
         /// </summary>
-        /// <returns>规则名称列表</returns>
+        /// <param name="ruleName">Rule name to look up</param>
+        /// <returns>true when the rule is provably owned by this program</returns>
+        private bool IsRuleOwnedByCurrentProgram(string ruleName)
+        {
+            try
+            {
+                if (firewallPolicy == null)
+                    return false;
+
+                foreach (var rule in firewallPolicy.Rules)
+                {
+                    try
+                    {
+                        dynamic fwRule = rule;
+                        string currentName = fwRule.Name;
+                        if (!string.Equals(currentName, ruleName, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        string applicationName = null;
+                        try
+                        {
+                            applicationName = fwRule.ApplicationName;
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Warning($"Failed to read ApplicationName for rule '{ruleName}': {ex.Message}");
+                        }
+
+                        return RuleNamingService.IsRuleOwnedByUs(currentName, applicationName);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogManager.Warning(LangManager.GetText("logMessages.readRuleNameFailed", ex.Message));
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warning($"Ownership check failed for rule '{ruleName}': {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Get all rule names created by this program
+        /// </summary>
+        /// <returns>List of rule names</returns>
         public List<string> GetAllRuleNames()
         {
             lock (addedRulesLock)
@@ -559,14 +666,14 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 更新防火墙规则
-        /// 扫描监控目标中的所有可执行文件，为每个文件创建或更新防火墙规则
+        /// Update firewall rules
+        /// Scan all executables in monitored targets and create or update a firewall rule for each
         /// </summary>
-        /// <param name="monitoredTargets">监控目标列表</param>
-        /// <param name="cancellationToken">取消令牌</param>
-        /// <param name="updateUI">更新UI的回调函数</param>
-        /// <returns>处理结果，包含添加的规则数和跳过的规则数</returns>
-        public async Task<(int addedCount, int skippedCount)> UpdateFirewallRules(List<dynamic> monitoredTargets, CancellationToken cancellationToken, Action<object, string> updateUI)
+        /// <param name="monitoredTargets">List of monitored targets</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// <param name="updateUI">Callback function to update UI</param>
+        /// <returns>Processing result, containing added and skipped rule counts</returns>
+        public async Task<(int addedCount, int skippedCount)> UpdateFirewallRules(IEnumerable<IScanTarget> monitoredTargets, CancellationToken cancellationToken, Action<object, string> updateUI)
         {
             int addedCount = 0;
             int skippedCount = 0;
@@ -576,7 +683,7 @@ namespace FirewallManager
                 LogManager.Info(LangManager.GetText("logMessages.updatingRules"));
                 updateUI("Running", LangManager.GetText("status.scanningTargets"));
 
-                // 检查防火墙策略是否已初始化
+                // Check if firewall policy is initialized
                 if (firewallPolicy == null)
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.firewallPolicyNotInitialized"));
@@ -584,16 +691,21 @@ namespace FirewallManager
                     return (addedCount, skippedCount);
                 }
 
-                // 同步本地规则列表与实际防火墙规则
+                // Sync local rule list with actual firewall rules
                 SyncRulesList();
 
-                // 收集所有需要处理的EXE文件
-                List<string> exeFiles = new List<string>();
-
-                // 并行扫描文件，提高性能
+                // Scan files in parallel to improve performance
                 var scanTasks = monitoredTargets.Select(target => Task.Run(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    // A reparse point at the target itself would redirect the whole scan to an
+                    // unrelated tree: the enumeration options below only filter children, not the root.
+                    if (ComHelper.HasReparsePointInPath(target.Path))
+                    {
+                        LogManager.Warning($"Skipping monitored target that is a reparse point: {target.Path}");
+                        return new List<string>();
+                    }
 
                     if (target.IsExe)
                     {
@@ -607,7 +719,18 @@ namespace FirewallManager
                         try
                         {
                             LogManager.Info(LangManager.GetText("logMessages.startScanningFolder", target.Path));
-                            string[] files = Directory.GetFiles(target.Path, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories);
+
+                            // Do not follow reparse points: a junction inside a monitored folder would
+                            // otherwise pull the scan into System32 and produce Block rules for
+                            // Windows binaries, and it can also create recursion loops.
+                            var enumerationOptions = new EnumerationOptions
+                            {
+                                RecurseSubdirectories = true,
+                                IgnoreInaccessible = true,
+                                AttributesToSkip = FileAttributes.ReparsePoint
+                            };
+
+                            string[] files = Directory.GetFiles(target.Path, Config.EXE_SEARCH_PATTERN, enumerationOptions);
                             LogManager.Info(LangManager.GetText("logMessages.scanCompleted", target.Path, files.Length));
                             return new List<string>(files);
                         }
@@ -619,20 +742,20 @@ namespace FirewallManager
                     return new List<string>();
                 }, cancellationToken)).ToArray();
 
-                // 等待所有扫描任务完成
+                // Wait for all scan tasks to complete
                 await Task.WhenAll(scanTasks);
 
-                // 合并结果并去重，避免重复处理
-                exeFiles = scanTasks.SelectMany(t => t.Result).Distinct().ToList();
+                // Merge results and deduplicate to avoid repeated processing
+                List<string> exeFiles = scanTasks.SelectMany(t => t.Result).Distinct().ToList();
 
                 LogManager.Info(LangManager.GetText("logMessages.foundExeFiles", exeFiles.Count));
                 updateUI("Running", LangManager.GetText("status.creatingRules", exeFiles.Count));
 
-                // 为每个EXE文件创建防火墙规则
+                // Create firewall rules for each EXE file
                 int processedCount = 0;
                 foreach (var exeFile in exeFiles)
                 {
-                    // 检查取消请求
+                    // Check cancellation request
                     cancellationToken.ThrowIfCancellationRequested();
 
                     processedCount++;
@@ -640,24 +763,24 @@ namespace FirewallManager
 
                     try
                     {
-                        // 信任检查：确保文件路径可信（系统目录或已签名）
-                        // 与自动监控策略保持一致，防止恶意文件注入
-                        if (!ComHelper.IsFilePathTrusted(exeFile))
+                        // Skip only Windows' own executables; blocking them would destabilize the system.
+                        // Unsigned binaries must NOT be skipped: containing them is the whole point.
+                        if (ComHelper.IsCriticalSystemExecutable(exeFile))
                         {
-                            LogManager.Warning(LangManager.GetText("logMessages.invalidCallerDetected", exeFile));
+                            LogManager.Warning($"Skipping critical system executable: {exeFile}");
                             skippedCount++;
                             continue;
                         }
 
-                        // 生成包含文件路径哈希值的规则名称，确保唯一性（统一调用 RuleNamingService）
+                        // Generate rule name containing file path hash to ensure uniqueness (consistently delegates to RuleNamingService)
                         string ruleName = RuleNamingService.BuildRuleName(exeFile);
 
-                        // 检查应用程序是否在白名单中
+                        // Check if application is in whitelist
                         if (WhitelistForm.IsInWhitelist(exeFile))
                         {
                             LogManager.Info(LangManager.GetText("logMessages.appInWhitelistSkipped", exeFile));
 
-                            // 检查是否存在针对该应用程序的规则，如果存在则删除
+                            // Check if a rule exists for this application; if so, delete it
                             bool whitelistRuleExists = CheckRuleExists(ruleName);
                             if (whitelistRuleExists)
                             {
@@ -680,16 +803,7 @@ namespace FirewallManager
                             continue;
                         }
 
-                        // 检查是否为系统关键程序
-                        string fullFileName = System.IO.Path.GetFileName(exeFile);
-                        if (Config.CRITICAL_PROGRAMS.Contains(fullFileName))
-                        {
-                            LogManager.Warning(LangManager.GetText("logMessages.skipCriticalProgram", exeFile));
-                            skippedCount++;
-                            continue;
-                        }
-
-                        // 检查规则是否已存在
+                        // Check if rule already exists
                         if (!CheckRuleExists(ruleName))
                         {
                             if (CreateAndAddFirewallRule(ruleName, exeFile, LangManager.GetText("firewall.ruleDescription")))
@@ -710,7 +824,7 @@ namespace FirewallManager
                     }
                     catch (OperationCanceledException)
                     {
-                        throw; // 重新抛出取消异常
+                        throw; // Re-throw cancellation exception
                     }
                     catch (Exception ex)
                     {
@@ -735,23 +849,28 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 移除指定文件夹的防火墙规则
+        /// Remove firewall rules for a specified folder
         /// </summary>
-        /// <param name="folderPath">文件夹路径</param>
-        /// <returns>删除的规则数量</returns>
+        /// <param name="folderPath">Folder path</param>
+        /// <returns>Number of deleted rules</returns>
         public int RemoveFolderRules(string folderPath)
         {
             int deletedCount = 0;
 
             try
             {
-                // 收集该文件夹下所有可执行文件的路径
+                // Collect paths of all executables under this folder
                 var exeFiles = new List<string>();
                 if (Directory.Exists(folderPath))
                 {
                     try
                     {
-                        string[] files = Directory.GetFiles(folderPath, Config.EXE_SEARCH_PATTERN, SearchOption.AllDirectories);
+                        string[] files = Directory.GetFiles(folderPath, Config.EXE_SEARCH_PATTERN, new EnumerationOptions
+                        {
+                            RecurseSubdirectories = true,
+                            IgnoreInaccessible = true,
+                            AttributesToSkip = FileAttributes.ReparsePoint
+                        });
                         exeFiles = new List<string>(files);
                     }
                     catch (Exception ex)
@@ -763,14 +882,14 @@ namespace FirewallManager
 
                 LogManager.Info(LangManager.GetText("logMessages.removingFolderRules", folderPath, exeFiles.Count));
 
-                // 为每个可执行文件生成规则名称并删除（使用 RuleNamingService 保证一致性）
+                // Generate rule name for each executable and delete it (using RuleNamingService for consistency)
                 foreach (var exeFile in exeFiles)
                 {
                     try
                     {
                         string ruleName = RuleNamingService.BuildRuleName(exeFile);
 
-                        // 检查规则是否存在
+                        // Check if rule exists
                         if (CheckRuleExists(ruleName))
                         {
                             try
@@ -807,16 +926,16 @@ namespace FirewallManager
         }
 
         /// <summary>
-        /// 获取防火墙规则详情
-        /// 根据规则名称获取防火墙规则的详细信息
+        /// Get firewall rule details
+        /// Retrieve detailed information of a firewall rule by its name
         /// </summary>
-        /// <param name="ruleName">规则名称</param>
-        /// <returns>规则对象</returns>
+        /// <param name="ruleName">Rule name</param>
+        /// <returns>Rule object</returns>
         public RuleDetailsInfo GetRuleDetails(string ruleName)
         {
             try
             {
-                // 验证规则名称，防止注入攻击
+                // Validate rule name to prevent injection attacks
                 if (!IsValidRuleName(ruleName))
                 {
                     return null;
@@ -831,7 +950,7 @@ namespace FirewallManager
                 if (rule == null)
                     return null;
 
-                // 验证规则是合法的 COM 对象（使用 CLSID 验证，防止 ProgID 劫持）
+                // Validate the rule is a legitimate COM object (use CLSID validation to prevent ProgID hijacking)
                 if (!ComHelper.ValidateComObjectType(rule, Config.FIREWALL_RULE_CLSID, Config.FIREWALL_RULE_IID))
                 {
                     LogManager.Warning(LangManager.GetText("logMessages.firewallRuleTypeValidationFailed"));
@@ -859,9 +978,17 @@ namespace FirewallManager
         {
             try
             {
-                // 验证规则名称，防止注入攻击（与 GetRuleDetails 保持一致）
+                // Validate rule name to prevent injection attacks (kept consistent with GetRuleDetails)
                 if (!IsValidRuleName(ruleName))
                 {
+                    return false;
+                }
+
+                // Only rules this program can prove it created may be modified. Without this check an
+                // arbitrary rule whose name happens to match could be switched from Block to Allow.
+                if (!IsRuleOwnedByCurrentProgram(ruleName))
+                {
+                    LogManager.Warning($"Refusing to update rule '{ruleName}': ownership cannot be verified.");
                     return false;
                 }
 
@@ -869,10 +996,23 @@ namespace FirewallManager
                 if (rule == null)
                     return false;
 
-                SafeSetProperty(rule, "Description", description);
-                SafeSetProperty(rule, "Enabled", enabled);
-                SafeSetProperty(rule, "Direction", direction);
-                SafeSetProperty(rule, "Action", action);
+                if (!ComHelper.ValidateComObjectType(rule, Config.FIREWALL_RULE_CLSID, Config.FIREWALL_RULE_IID))
+                {
+                    LogManager.Warning(LangManager.GetText("logMessages.firewallRuleTypeValidationFailed"));
+                    return false;
+                }
+
+                bool applied =
+                    SafeSetProperty(rule, "Description", description) &&
+                    SafeSetProperty(rule, "Enabled", enabled) &&
+                    SafeSetProperty(rule, "Direction", direction) &&
+                    SafeSetProperty(rule, "Action", action);
+
+                if (!applied)
+                {
+                    LogManager.Error($"Failed to apply one or more properties to rule '{ruleName}'.");
+                    return false;
+                }
 
                 LogManager.Info(LangManager.GetText("logMessages.updateRule", ruleName));
                 return true;
